@@ -44,7 +44,8 @@ void setup()
 
 	delay(1000);
 
-	Utils::setClock();
+	// Don't block the boot forever: WiFi reconnects are only handled in loop().
+	Utils::setClock(30000);
 
 	Agent::setup(agentConfig);
 }

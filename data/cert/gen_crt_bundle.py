@@ -202,7 +202,7 @@ def main():
 
     for path in args.input:
         if os.path.isfile(path):
-            if os.path.basename(path) == 'data/cert/cacrt_all.pem' and args.filter:
+            if os.path.basename(path) == 'cacrt_all.pem' and args.filter:
                 bundle.add_with_filter(path, args.filter)
             else:
                 bundle.add_from_file(path)

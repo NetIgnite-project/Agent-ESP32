@@ -31,8 +31,9 @@ JsonDocument get_status(JsonDocument& input) {
 
     } else if (InputValidation::macAddress(input["address"])) {
 
+        String linkLocal = Utils::macToLinkLocalIPv6(input["address"]);
         IPv6Address linkLocalAddress;
-        if (!linkLocalAddress.fromString(Utils::macToLinkLocalIPv6(input["address"]))) {
+        if (linkLocal.length() == 0 || !linkLocalAddress.fromString(linkLocal.c_str())) {
             response["message"] = "Invalid MAC address format";
             return response;
         }

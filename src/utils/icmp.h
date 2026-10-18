@@ -11,12 +11,18 @@
 #include <lwip/ip4.h>
 #include <lwip/ip6.h>
 #include <esp_netif_net_stack.h>
+#include <atomic>
+#include <new>
 
 #define PING_TIMEOUT_MS 5000
 
-struct ping_result_t {
-    bool success;
-    bool finished;
+// State shared between the caller and the ping task. It lives on the heap and is freed by
+// whichever side releases it last, so a ping that outlives PING_TIMEOUT_MS can't write to memory
+// that is gone.
+struct ping_context_t {
+    std::atomic<bool> success{false};
+    std::atomic<bool> finished{false};
+    std::atomic<bool> released{false};
 };
 
 class ICMP {
@@ -50,40 +56,55 @@ class ICMP {
         ping_config.count = count;
         // ping_config.interface = get_netif_index();
 
+        ping_context_t *context = new (std::nothrow) ping_context_t();
+        if (!context) return false;
+
         esp_ping_callbacks_t cbs;
         cbs.on_ping_success = on_ping_success;
         cbs.on_ping_timeout = on_ping_timeout;
         cbs.on_ping_end = on_ping_end;
+        cbs.cb_args = context;
 
-        ping_result_t result;
-        cbs.cb_args = &result;
-        result.success = false;
-        result.finished = false;
+        esp_ping_handle_t ping = nullptr;
+        if (esp_ping_new_session(&ping_config, &cbs, &ping) != ESP_OK) {
+            delete context;
+            return false;
+        }
+        if (esp_ping_start(ping) != ESP_OK) {
+            esp_ping_delete_session(ping);
+            delete context;
+            return false;
+        }
 
-
-        esp_ping_handle_t ping;
-        esp_ping_new_session(&ping_config, &cbs, &ping);
-        esp_ping_start(ping);
-        
         unsigned long start_time = millis();
-        while (!result.finished && (millis() - start_time < PING_TIMEOUT_MS)) {
+        while (!context->finished && (millis() - start_time < PING_TIMEOUT_MS)) {
             delay(10);
         }
 
-        return result.success;
+        bool success = context->success;
+        release(context);
+        return success;
+    }
+
+    static void release(ping_context_t *context) {
+        // The second of the two releases (caller and on_ping_end) frees the context.
+        if (context->released.exchange(true)) {
+            delete context;
+        }
     }
 
     static void on_ping_success(esp_ping_handle_t hdl, void *args) {
-        ping_result_t *result = static_cast<ping_result_t*>(args);
+        ping_context_t *context = static_cast<ping_context_t*>(args);
 
-        result->success = true;
+        context->success = true;
     }
 
     static void on_ping_timeout(esp_ping_handle_t hdl, void *args) {}
 
     static void on_ping_end(esp_ping_handle_t hdl, void *args) {
-        ping_result_t *result = static_cast<ping_result_t*>(args);
-        result->finished = true;
+        ping_context_t *context = static_cast<ping_context_t*>(args);
+        context->finished = true;
+        release(context);
 
         esp_ping_delete_session(hdl);
     }

@@ -88,6 +88,7 @@ jobs:
   emulator:
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     env:
       QEMU_URL: https://github.com/espressif/qemu/releases/download/esp-develop-9.2.2-20260417/qemu-xtensa-softmmu-esp_develop_9.2.2_20260417-x86_64-linux-gnu.tar.xz
       QEMU_SHA256: 0eecb2a34a5586c0e59110f77b9343b7b336e82fdb0e1a30e1dc1bab8a547e35
@@ -108,6 +109,12 @@ jobs:
         run: |
           bun install --frozen-lockfile
           bun improv-test.ts "$GITHUB_WORKSPACE/qemu/bin/qemu-system-xtensa" "$GITHUB_WORKSPACE/qemu-firmware/firmware.factory.bin" "$RUNNER_TEMP"
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: emulator-serial-log
+          path: ${{ runner.temp }}/improv-transcript.log
+          retention-days: 7
 
   # Tags only, after the unit, build and emulator checks passed.
   release:

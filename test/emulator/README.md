@@ -16,5 +16,7 @@ bun improv-test.ts /path/to/qemu-system-xtensa ../../.pio/build/esp32dev-qemu/fi
 ```
 
 Download QEMU from the [releases](https://github.com/espressif/qemu/releases)
-(`qemu-xtensa-softmmu-*`). Espressif's QEMU crashes inside ESP-IDF's NVS start-up on every second
-boot and recovers on the next one; the test tolerates that.
+(`qemu-xtensa-softmmu-*`). The test starts it with the timer-group watchdogs disabled, like
+ESP-IDF's own QEMU runner; with them enabled, slow hosts reset or crash the emulated chip during
+boot. If a check fails, the test prints the device's serial output, and CI keeps it as the
+`emulator-serial-log` artifact.

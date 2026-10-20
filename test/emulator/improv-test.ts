@@ -7,6 +7,8 @@ import { ImprovSerial } from "improv-wifi-serial-sdk/dist/serial.js";
 
 const [qemuPath, factoryPath, workDir] = Bun.argv.slice(2);
 const PORT = 5599;
+// Boots take a few seconds locally but much longer on shared CI runners.
+const BOOT_TIMEOUT_MS = 180_000;
 
 let failures = 0;
 function check(name: string, ok: boolean, detail?: unknown) {
@@ -34,6 +36,10 @@ const qemu = Bun.spawn(
 		`tcp:127.0.0.1:${PORT},server,wait=on`,
 		"-monitor",
 		"none",
+		// Like ESP-IDF's own QEMU runner: an emulated chip on a slow host would otherwise be reset by
+		// the timer-group watchdogs during boot, over and over.
+		"-global",
+		"driver=timer.esp32.timg,property=wdt_disable,value=true",
 	],
 	{ stdout: "ignore", stderr: "inherit" },
 );
@@ -104,7 +110,7 @@ const logger = { log() {}, error() {}, debug() {} };
 
 try {
 	// --- Boot ----------------------------------------------------------------------------------
-	check("firmware boots to the setup prompt", (await waitFor("Waiting for Wi-Fi settings", 90000)) >= 0);
+	check("firmware boots to the setup prompt", (await waitFor("Waiting for Wi-Fi settings", BOOT_TIMEOUT_MS)) >= 0);
 
 	// --- Improv with the official client ------------------------------------------------------
 	const improv = new ImprovSerial(port as any, logger as any);
@@ -153,16 +159,13 @@ try {
 	check("name is saved", await command("name kitchen-esp", "Name saved"));
 	check("log level", await command("log debug", "Log level: debug"));
 
-	// The token must not be echoed anywhere.
 	// The transcript only holds what the device sent: the token must never appear in it.
 	check("enrollment token never printed", !transcript.includes("netignite_enroll_abc:def"));
 
 	// --- Settings survive a restart ---------------------------------------------------------------
 	const beforeReboot = transcript.length;
 	socket.write("reboot\n");
-	// (Espressif's QEMU crashes in ESP-IDF's NVS start-up on every second boot and recovers on the
-	// next one, so the reset reason isn't reliable here; wait for the boot banner instead.)
-	check("reboots", (await waitFor("I Device kitchen-esp", 90000, beforeReboot)) >= 0);
+	check("reboots", (await waitFor("I Device kitchen-esp", BOOT_TIMEOUT_MS, beforeReboot)) >= 0);
 	await waitFor("[", 5000, transcript.length);
 	await sleep(1500);
 	const statusFrom = transcript.length;
@@ -180,13 +183,22 @@ try {
 
 	check("factory reset erases everything", await command("factory-reset confirm", "All settings erased"));
 	const afterReset = transcript.length;
-	await waitFor("I Device NetIgnite-", 90000, afterReset);
+	await waitFor("I Device NetIgnite-", BOOT_TIMEOUT_MS, afterReset);
 	await sleep(1500);
 	check("after the reset the agent is unconfigured", await command("status", "server:    not set"));
+} catch (error) {
+	check("test ran to the end", false, String(error));
 } finally {
 	await Bun.write(`${workDir}/improv-transcript.log`, transcript);
 	socket?.end();
 	qemu.kill();
+}
+
+if (failures > 0) {
+	// The device's serial output, so a CI log shows where it got stuck.
+	const printable = transcript.replace(/[^\x09\x0a\x20-\x7e]/g, "");
+	console.log("\n--- last 80 lines of serial output ---");
+	console.log(printable.split("\n").slice(-80).join("\n"));
 }
 
 console.log(failures === 0 ? "\nALL EMULATOR CHECKS PASSED" : `\n${failures} EMULATOR CHECK(S) FAILED`);

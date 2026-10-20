@@ -1,0 +1,11 @@
+{
+	"name": "netignite-agent-emulator-test",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"test": "bun improv-test.ts"
+	},
+	"dependencies": {
+		"improv-wifi-serial-sdk": "2.8.1"
+	}
+}

@@ -6,7 +6,8 @@ NetIgnite server reads to offer the firmware in the web installer and for OTA up
 
 The files are the standard Arduino-ESP32 layout: bootloader at 0x1000, partition table at 0x8000,
 OTA data (boot_app0) at 0xe000 and the app at 0x10000. The web installer adds an NVS image at
-0x9000 with the server URL and a single-use enrollment token.
+0x9000 with the server URL, a single-use enrollment token and the agent's name: the keys listed
+in release.json's nvs.keys (the server writes no others).
 """
 
 import argparse
@@ -77,7 +78,7 @@ def main():
         "board": "esp32dev",
         "protocol": 2,
         "parts": parts,
-        "nvs": {"offset": 0x9000, "size": 0x5000, "namespace": "netignite", "keys": ["server", "enroll"]},
+        "nvs": {"offset": 0x9000, "size": 0x5000, "namespace": "netignite", "keys": ["server", "enroll", "name"]},
         "app": {"file": "firmware.bin", "signature": signature},
     }
     with open(os.path.join(args.output, "release.json"), "w") as handle:

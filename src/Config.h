@@ -12,9 +12,10 @@ constexpr const char* FIRMWARE_NAME = "NetIgnite Agent";
 constexpr const char* FIRMWARE_VERSION = NETIGNITE_FW_VERSION;
 
 /**
- * NVS namespace and keys (max. 15 characters each). The web installer writes `server` and
- * `enroll` into an NVS partition image, so these names are part of the provisioning format:
- * change them only together with the server's image generator.
+ * NVS namespace and keys (max. 15 characters each). The web installer writes `server`, `enroll`
+ * and `name` into an NVS partition image (the keys scripts/collect_release.py lists in
+ * release.json), so these names are part of the provisioning format: change them only together
+ * with the server (server/lib/firmware/provisioning.ts).
  */
 namespace keys {
 constexpr const char* NAMESPACE = "netignite";

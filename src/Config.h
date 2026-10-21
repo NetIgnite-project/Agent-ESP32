@@ -34,6 +34,9 @@ constexpr const char* NETMASK = "netmask";
 constexpr const char* DNS1 = "dns1";
 constexpr const char* DNS2 = "dns2";
 constexpr const char* LOG_LEVEL = "log_level";
+/** Version and partition of an installed update until it confirms itself (ota/Rollback.h). */
+constexpr const char* OTA_VERSION = "ota_ver";
+constexpr const char* OTA_PARTITION = "ota_part";
 }  // namespace keys
 
 constexpr uint32_t SERIAL_BAUD = 115200;
@@ -56,6 +59,28 @@ constexpr uint32_t ENROLL_RETRY_MS = 30000;
 constexpr uint32_t STATUS_BUDGET_MS = 4500;
 constexpr uint32_t PING_TIMEOUT_MS = 1000;
 constexpr uint32_t TCP_TIMEOUT_MS = 1500;
+
+/**
+ * OTA: a new firmware goes back to the previous one unless it reaches the server within this
+ * time. Short in emulator builds, which can't reach a server, so the test sees the rollback.
+ */
+#ifdef NETIGNITE_EMULATOR
+constexpr uint32_t OTA_CONFIRM_TIMEOUT_MS = 20000;
+#else
+constexpr uint32_t OTA_CONFIRM_TIMEOUT_MS = 5 * 60 * 1000;
+#endif
+/** OTA: the download needs a second TLS session; below this the server connection is closed first. */
+constexpr uint32_t OTA_MIN_FREE_BLOCK = 50000;
+
+/**
+ * CONFIG_SET: a new server URL or IP setting is only saved once the agent reaches the server with
+ * it; otherwise the agent restarts with the previous settings after this time.
+ */
+constexpr uint32_t CONFIG_TRIAL_MS = 120000;
+
+/** Console: log lines are sent to the server in batches of at most this size, this often. */
+constexpr size_t LOG_EVENT_MAX_BYTES = 6000;
+constexpr uint32_t LOG_EVENT_INTERVAL_MS = 300;
 
 /** Wake-on-LAN: rounds of packets per request, and the pause between them. */
 constexpr int WOL_ROUNDS = 3;

@@ -51,6 +51,8 @@ Result enroll(const netignite::ServerUrl& server, const String& enrollmentToken)
 	JsonDocument body;
 	body["enrollment_token"] = enrollmentToken;
 	body["secret"] = secret;
+	// The server refuses a token of a Linux agent (409) without using it up.
+	body["kind"] = netignite::protocol::AGENT_KIND;
 	String payload;
 	serializeJson(body, payload);
 
@@ -68,7 +70,7 @@ Result enroll(const netignite::ServerUrl& server, const String& enrollmentToken)
 	const bool parsed = !deserializeJson(answer, response);
 	const char* message = parsed ? answer["message"].as<const char*>() : nullptr;
 
-	if (status == 401 || status == 400) {
+	if (status == 401 || status == 400 || status == 409) {
 		result.status = Result::Status::Rejected;
 		result.message = message ? message : "Enrollment token rejected";
 		return result;

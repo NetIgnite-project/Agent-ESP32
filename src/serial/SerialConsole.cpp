@@ -6,26 +6,15 @@
 #include "core/DeviceInfo.h"
 #include "core/Log.h"
 #include "netignite/CommandLine.h"
+#include "netignite/Hex.h"
 #include "netignite/ServerUrl.h"
+#include "netignite/Validation.h"
+#include "ota/Rollback.h"
 
 namespace improv = netignite::improv;
 
-namespace {
-
-bool validHostname(const std::string& name) {
-	if (name.empty() || name.size() > 63 || name.front() == '-' || name.back() == '-') return false;
-	for (char c : name) {
-		if (!isalnum(static_cast<unsigned char>(c)) && c != '-') return false;
-	}
-	return true;
-}
-
-bool validIp(const std::string& text) {
-	IPAddress address;
-	return address.fromString(text.c_str());
-}
-
-}  // namespace
+using netignite::isValidHostname;
+using netignite::isValidIpv4;
 
 void SerialConsole::loop() {
 	while (Serial.available() > 0) {
@@ -128,7 +117,7 @@ void SerialConsole::handleImprov(uint8_t type, const std::vector<uint8_t>& data)
 					break;
 				}
 				const std::string name(data.begin() + 3, data.end());
-				if (!validHostname(name)) {
+				if (!isValidHostname(name)) {
 					sendImprov(improv::buildErrorPacket(improv::Error::BadHostname));
 					break;
 				}
@@ -189,6 +178,10 @@ void SerialConsole::handleLine(const std::string& line) {
 		ESP.restart();
 	} else if (command == "factory-reset") {
 		cmdFactoryReset(args);
+#ifdef NETIGNITE_EMULATOR
+	} else if (command.rfind("ota-", 0) == 0) {
+		cmdOta(args);
+#endif
 	} else {
 		Log::print("Unknown command \"%s\". Type \"help\" for the commands.", command.c_str());
 	}
@@ -246,6 +239,17 @@ void SerialConsole::printStatus() {
 	Log::print("  agent:     %s", agentState);
 	Log::print("  partition: %s, reset reason: %s, free heap: %lu", deviceInfo::runningPartition(),
 	           deviceInfo::resetReason(), static_cast<unsigned long>(ESP.getFreeHeap()));
+
+	const OtaUpdater::Progress update = agent_.ota().progress();
+	if (update.state != OtaUpdater::State::Idle) {
+		Log::print("  update:    %s %s%s%s", update.version.c_str(), OtaUpdater::stateName(update.state),
+		           update.error.empty() ? "" : ": ", update.error.c_str());
+	}
+	if (rollback::pending()) Log::print("  firmware:  on probation until it reaches the server");
+	if (rollback::failedUpdate().length() > 0) {
+		Log::print("  firmware:  the update to %s failed and was rolled back", rollback::failedUpdate().c_str());
+	}
+	Log::print("  updates:   %s", OtaWriter::requiresSignature() ? "signed only" : "checked by SHA-256");
 }
 
 void SerialConsole::cmdWifi(const std::vector<std::string>& args) {
@@ -324,7 +328,7 @@ void SerialConsole::cmdIp(const std::vector<std::string>& args) {
 	}
 	if (args.size() >= 5 && args.size() <= 7 && args[1] == "static") {
 		for (size_t i = 2; i < args.size(); i++) {
-			if (!validIp(args[i])) {
+			if (!isValidIpv4(args[i])) {
 				Log::print("\"%s\" isn't an IPv4 address.", args[i].c_str());
 				return;
 			}
@@ -345,7 +349,7 @@ void SerialConsole::cmdIp(const std::vector<std::string>& args) {
 }
 
 void SerialConsole::cmdName(const std::vector<std::string>& args) {
-	if (args.size() != 2 || !validHostname(args[1])) {
+	if (args.size() != 2 || !isValidHostname(args[1])) {
 		Log::print("Usage: name <device-name> (letters, digits and -, max. 63)");
 		return;
 	}
@@ -374,3 +378,65 @@ void SerialConsole::cmdFactoryReset(const std::vector<std::string>& args) {
 	delay(200);
 	ESP.restart();
 }
+
+#ifdef NETIGNITE_EMULATOR
+
+void SerialConsole::cmdOta(const std::vector<std::string>& args) {
+	String error;
+	const std::string& command = args[0];
+
+	if (command == "ota-begin" && (args.size() == 3 || args.size() == 4)) {
+		netignite::protocol::OtaRequest request;
+		request.version = "emulator";
+		request.size = static_cast<uint32_t>(strtoul(args[1].c_str(), nullptr, 10));
+		std::vector<uint8_t> digest;
+		if (request.size == 0 || !netignite::fromHex(args[2], digest) || digest.size() != 32 ||
+		    (args.size() == 4 && !netignite::fromHex(args[3], request.signature))) {
+			Log::print("OTA error: invalid arguments");
+			return;
+		}
+		std::copy(digest.begin(), digest.end(), request.sha256.begin());
+		if (!otaWriter_.begin(request, error)) {
+			Log::print("OTA error: %s", error.c_str());
+			return;
+		}
+		Log::print("OTA ready for %lu bytes", static_cast<unsigned long>(request.size));
+		return;
+	}
+
+	if (command == "ota-data" && args.size() == 2) {
+		std::vector<uint8_t> data;
+		if (!netignite::fromHex(args[1], data)) {
+			Log::print("OTA error: invalid data");
+			otaWriter_.abort();
+			return;
+		}
+		if (!otaWriter_.active()) return;
+		if (!otaWriter_.write(data.data(), data.size(), error)) {
+			Log::print("OTA error: %s", error.c_str());
+			return;
+		}
+		// The emulated UART has no flow control: the test waits for this before sending more.
+		const uint32_t written = otaWriter_.written();
+		if (written % 2000 < data.size() || written == otaWriter_.size()) {
+			Log::print("OTA ok %lu", static_cast<unsigned long>(written));
+		}
+		return;
+	}
+
+	if (command == "ota-end" && args.size() == 1) {
+		if (!otaWriter_.finish(error)) {
+			Log::print("OTA error: %s", error.c_str());
+			return;
+		}
+		rollback::recordInstalled(settings_, "emulator");
+		Log::print("OTA installed. Restarting...");
+		delay(200);
+		ESP.restart();
+		return;
+	}
+
+	Log::print("Usage: ota-begin <size> <sha256> [signature] | ota-data <hex> | ota-end");
+}
+
+#endif

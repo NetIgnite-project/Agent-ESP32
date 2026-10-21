@@ -1,17 +1,20 @@
 // Host-side unit tests for lib/netignite_core: pio test -e native
 #include <unity.h>
 
+#include <cstring>
 #include <string>
 #include <vector>
 
 #include "netignite/CommandLine.h"
 #include "netignite/Hex.h"
 #include "netignite/Improv.h"
+#include "netignite/LogRing.h"
 #include "netignite/Mac.h"
 #include "netignite/MagicPacket.h"
 #include "netignite/Protocol.h"
 #include "netignite/SerialDemux.h"
 #include "netignite/ServerUrl.h"
+#include "netignite/Validation.h"
 
 using namespace netignite;
 
@@ -376,6 +379,266 @@ void test_split_command_line() {
 void test_hex() {
 	const uint8_t bytes[] = {0x00, 0x0f, 0xa5, 0xff};
 	TEST_ASSERT_EQUAL_STRING("000fa5ff", toHex(bytes, sizeof(bytes)).c_str());
+
+	std::vector<uint8_t> decoded;
+	TEST_ASSERT_TRUE(fromHex("000FA5ff", decoded));
+	TEST_ASSERT_EQUAL_size_t(4, decoded.size());
+	TEST_ASSERT_EQUAL_UINT8_ARRAY(bytes, decoded.data(), 4);
+	TEST_ASSERT_TRUE(fromHex("", decoded));
+	TEST_ASSERT_EQUAL_size_t(0, decoded.size());
+	TEST_ASSERT_FALSE(fromHex("abc", decoded));
+	TEST_ASSERT_FALSE(fromHex("zz", decoded));
+	TEST_ASSERT_EQUAL_size_t(0, decoded.size());
+}
+
+// --- Validation --------------------------------------------------------------------------------
+
+void test_validation() {
+	TEST_ASSERT_TRUE(isValidHostname("Garage-ESP32"));
+	TEST_ASSERT_TRUE(isValidHostname("a"));
+	TEST_ASSERT_FALSE(isValidHostname(""));
+	TEST_ASSERT_FALSE(isValidHostname("-a"));
+	TEST_ASSERT_FALSE(isValidHostname("a-"));
+	TEST_ASSERT_FALSE(isValidHostname("Garage ESP32"));
+	TEST_ASSERT_FALSE(isValidHostname(std::string(64, 'a')));
+
+	TEST_ASSERT_TRUE(isValidIpv4("192.168.1.5"));
+	TEST_ASSERT_TRUE(isValidIpv4("0.0.0.0"));
+	TEST_ASSERT_TRUE(isValidIpv4("255.255.255.255"));
+	TEST_ASSERT_FALSE(isValidIpv4("256.1.1.1"));
+	TEST_ASSERT_FALSE(isValidIpv4("1.2.3"));
+	TEST_ASSERT_FALSE(isValidIpv4("1.2.3.4.5"));
+	TEST_ASSERT_FALSE(isValidIpv4("01.2.3.4"));
+	TEST_ASSERT_FALSE(isValidIpv4("1..3.4"));
+	TEST_ASSERT_FALSE(isValidIpv4("1.2.3.4."));
+	TEST_ASSERT_FALSE(isValidIpv4("a.b.c.d"));
+	TEST_ASSERT_FALSE(isValidIpv4(""));
+}
+
+// --- Log ring ----------------------------------------------------------------------------------
+
+void test_log_ring_reads_from_a_cursor() {
+	LogRing ring(1000);
+	ring.push("one");
+	ring.push("two");
+	ring.push("three");
+	TEST_ASSERT_EQUAL_UINT32(3, ring.nextSeq());
+
+	std::vector<std::string> lines;
+	auto result = ring.read(1, 1000, lines);
+	TEST_ASSERT_EQUAL_size_t(2, lines.size());
+	TEST_ASSERT_EQUAL_STRING("two", lines[0].c_str());
+	TEST_ASSERT_EQUAL_UINT32(3, result.next);
+	TEST_ASSERT_EQUAL_UINT32(0, result.dropped);
+
+	// Nothing new: empty read, cursor stays.
+	lines.clear();
+	result = ring.read(3, 1000, lines);
+	TEST_ASSERT_EQUAL_size_t(0, lines.size());
+	TEST_ASSERT_EQUAL_UINT32(3, result.next);
+}
+
+void test_log_ring_drops_old_lines_and_reports_them() {
+	LogRing ring(10);
+	ring.push("aaaa");  // seq 0
+	ring.push("bbbb");  // seq 1
+	ring.push("cccc");  // seq 2: drops seq 0
+	TEST_ASSERT_EQUAL_size_t(8, ring.bytes());
+
+	std::vector<std::string> lines;
+	const auto result = ring.read(0, 1000, lines);
+	TEST_ASSERT_EQUAL_UINT32(1, result.dropped);
+	TEST_ASSERT_EQUAL_size_t(2, lines.size());
+	TEST_ASSERT_EQUAL_STRING("bbbb", lines[0].c_str());
+	TEST_ASSERT_EQUAL_UINT32(3, result.next);
+}
+
+void test_log_ring_limits_bytes_and_line_length() {
+	LogRing ring(10000);
+	ring.push(std::string(500, 'x'));
+	TEST_ASSERT_EQUAL_size_t(LogRing::MAX_LINE, ring.bytes());
+	ring.push("abc");
+	ring.push("def");
+
+	std::vector<std::string> lines;
+	auto result = ring.read(0, 245, lines);
+	// The first line is always returned, even if it alone exceeds the budget.
+	TEST_ASSERT_EQUAL_size_t(2, lines.size());
+	TEST_ASSERT_EQUAL_UINT32(2, result.next);
+	lines.clear();
+	result = ring.read(result.next, 245, lines);
+	TEST_ASSERT_EQUAL_size_t(1, lines.size());
+	TEST_ASSERT_EQUAL_STRING("def", lines[0].c_str());
+
+	// A cursor from the future (after a reboot) reads from the end.
+	lines.clear();
+	result = ring.read(1000, 245, lines);
+	TEST_ASSERT_EQUAL_size_t(0, lines.size());
+	TEST_ASSERT_EQUAL_UINT32(3, result.next);
+}
+
+// --- OTA, config and log requests --------------------------------------------------------------
+
+static const char* const SHA =
+	"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+void test_parse_ota_request() {
+	JsonDocument doc;
+	protocol::Frame frame;
+	std::string error;
+	protocol::OtaRequest ota;
+
+	std::string text = std::string(R"({"t":"req","id":1,"cmd":"OTA_BEGIN","p":{"version":"2.1.0-beta.1",)") +
+	                   R"("path":"/api/v1/firmware/2.1.0-beta.1/files/firmware.bin","size":1260048,"sha256":")" + SHA +
+	                   R"("}})";
+	TEST_ASSERT_TRUE(protocol::parseFrame(text, doc, frame, error));
+	TEST_ASSERT_TRUE(protocol::parseOtaRequest(frame.payload, ota, error));
+	TEST_ASSERT_EQUAL_STRING("2.1.0-beta.1", ota.version.c_str());
+	TEST_ASSERT_EQUAL_STRING("/api/v1/firmware/2.1.0-beta.1/files/firmware.bin", ota.path.c_str());
+	TEST_ASSERT_EQUAL_UINT32(1260048, ota.size);
+	TEST_ASSERT_EQUAL_HEX8(0x01, ota.sha256[0]);
+	TEST_ASSERT_EQUAL_HEX8(0xef, ota.sha256[31]);
+	TEST_ASSERT_EQUAL_size_t(0, ota.signature.size());
+}
+
+void test_parse_ota_request_rejects_invalid() {
+	JsonDocument doc;
+	protocol::Frame frame;
+	std::string error;
+	protocol::OtaRequest ota;
+
+	const std::string valid = std::string(R"("version":"2.1.0","size":1000,"sha256":")") + SHA + "\"";
+	auto parse = [&](const std::string& payload) {
+		protocol::parseFrame(R"({"t":"req","id":1,"cmd":"OTA_BEGIN","p":{)" + payload + "}}", doc, frame, error);
+		return protocol::parseOtaRequest(frame.payload, ota, error);
+	};
+
+	TEST_ASSERT_TRUE(parse(valid + R"(,"path":"/api/v1/firmware/2.1.0/files/firmware.bin")"));
+	TEST_ASSERT_EQUAL_size_t(0, ota.signature.size());
+	TEST_ASSERT_TRUE(parse(valid + R"(,"path":"/f.bin","signature":")" + std::string(142, 'a') + "\""));
+	TEST_ASSERT_EQUAL_size_t(71, ota.signature.size());
+
+	TEST_ASSERT_FALSE(parse(valid + R"(,"path":"https://evil.example/f.bin")"));
+	TEST_ASSERT_FALSE(parse(valid + R"(,"path":"//evil.example/f.bin")"));
+	TEST_ASSERT_FALSE(parse(valid + R"(,"path":"/api/../../f.bin")"));
+	TEST_ASSERT_FALSE(parse(valid + R"(,"path":"/f.bin?x=1")"));
+	TEST_ASSERT_FALSE(parse(valid + R"(,"path":"/f.bin","signature":"xyz")"));
+	TEST_ASSERT_FALSE(parse(std::string(R"("version":"2.1.0","size":2000000,"sha256":")") + SHA + R"(","path":"/f")"));
+	TEST_ASSERT_FALSE(parse(std::string(R"("version":"2.1.0","size":0,"sha256":")") + SHA + R"(","path":"/f")"));
+	TEST_ASSERT_FALSE(parse(R"("version":"2.1.0","size":10,"sha256":"abcd","path":"/f")"));
+	TEST_ASSERT_FALSE(parse(std::string(R"("version":"2 1","size":10,"sha256":")") + SHA + R"(","path":"/f")"));
+}
+
+void test_parse_config_request() {
+	JsonDocument doc;
+	protocol::Frame frame;
+	std::string error;
+	protocol::ConfigRequest config;
+	auto parse = [&](const std::string& payload) {
+		protocol::parseFrame(R"({"t":"req","id":1,"cmd":"CONFIG_SET","p":)" + payload + "}", doc, frame, error);
+		return protocol::parseConfigRequest(frame.payload, config, error);
+	};
+
+	TEST_ASSERT_TRUE(parse(R"({"server_url":"https://netignite.example/","name":"Garage-ESP32","log_level":"debug"})"));
+	TEST_ASSERT_EQUAL_STRING("https://netignite.example", config.serverUrl->c_str());
+	TEST_ASSERT_EQUAL_STRING("Garage-ESP32", config.name->c_str());
+	TEST_ASSERT_EQUAL_STRING("debug", config.logLevel->c_str());
+	TEST_ASSERT_FALSE(config.ip.has_value());
+
+	TEST_ASSERT_TRUE(parse(R"({"ip":{"mode":"static","address":"192.168.1.50","gateway":"192.168.1.1","netmask":"255.255.255.0","dns1":"1.1.1.1"}})"));
+	TEST_ASSERT_TRUE(config.ip->isStatic);
+	TEST_ASSERT_EQUAL_STRING("192.168.1.50", config.ip->address.c_str());
+	TEST_ASSERT_EQUAL_STRING("1.1.1.1", config.ip->dns1.c_str());
+	TEST_ASSERT_EQUAL_STRING("", config.ip->dns2.c_str());
+
+	TEST_ASSERT_TRUE(parse(R"({"ip":{"mode":"dhcp"}})"));
+	TEST_ASSERT_FALSE(config.ip->isStatic);
+
+	TEST_ASSERT_FALSE(parse(R"({})"));
+	TEST_ASSERT_FALSE(parse(R"({"server_url":"ftp://x"})"));
+	TEST_ASSERT_FALSE(parse(R"({"name":"Garage ESP32"})"));
+	TEST_ASSERT_FALSE(parse(R"({"log_level":"verbose"})"));
+	TEST_ASSERT_FALSE(parse(R"({"ip":{"mode":"static","address":"192.168.1.50","gateway":"192.168.1.1"}})"));
+	TEST_ASSERT_FALSE(parse(R"({"ip":{"mode":"static","address":"192.168.1.500","gateway":"192.168.1.1","netmask":"255.255.255.0"}})"));
+	TEST_ASSERT_FALSE(parse(R"({"ip":{"mode":"magic"}})"));
+}
+
+void test_parse_log_subscribe() {
+	JsonDocument doc;
+	protocol::Frame frame;
+	std::string error;
+	bool enabled = false;
+	protocol::parseFrame(R"({"t":"req","id":1,"cmd":"LOG_SUBSCRIBE","p":{"enabled":true}})", doc, frame, error);
+	TEST_ASSERT_TRUE(protocol::parseLogSubscribe(frame.payload, enabled, error));
+	TEST_ASSERT_TRUE(enabled);
+	protocol::parseFrame(R"({"t":"req","id":1,"cmd":"LOG_SUBSCRIBE","p":{"enabled":"yes"}})", doc, frame, error);
+	TEST_ASSERT_FALSE(protocol::parseLogSubscribe(frame.payload, enabled, error));
+}
+
+// --- SSH ---------------------------------------------------------------------------------------
+
+void test_base64() {
+	const auto b64 = [](const char* text, bool pad) {
+		return toBase64(reinterpret_cast<const uint8_t*>(text), strlen(text), pad);
+	};
+	TEST_ASSERT_EQUAL_STRING("", b64("", true).c_str());
+	TEST_ASSERT_EQUAL_STRING("Zg==", b64("f", true).c_str());
+	TEST_ASSERT_EQUAL_STRING("Zm8=", b64("fo", true).c_str());
+	TEST_ASSERT_EQUAL_STRING("Zm9v", b64("foo", true).c_str());
+	TEST_ASSERT_EQUAL_STRING("Zm9vYmFy", b64("foobar", true).c_str());
+	TEST_ASSERT_EQUAL_STRING("Zg", b64("f", false).c_str());
+	TEST_ASSERT_EQUAL_STRING("Zm8", b64("fo", false).c_str());
+
+	const uint8_t zeros[32] = {};
+	TEST_ASSERT_EQUAL_STRING(("SHA256:" + std::string(43, 'A')).c_str(), protocol::sshFingerprint(zeros).c_str());
+}
+
+void test_parse_ssh_requests() {
+	JsonDocument doc;
+	protocol::Frame frame;
+	std::string error;
+	protocol::SshRequest ssh;
+	const std::string key = "SHA256:" + std::string(43, 'b');
+	auto parse = [&](const std::string& payload, bool exec) {
+		protocol::parseFrame(R"({"t":"req","id":1,"cmd":"SSH","p":)" + payload + "}", doc, frame, error);
+		return protocol::parseSshRequest(frame.payload, exec, ssh, error);
+	};
+
+	TEST_ASSERT_TRUE(parse(R"({"host":"192.168.1.20","port":22,"username":"admin","auth":{"type":"password","password":"pw"},"host_key":null})", false));
+	TEST_ASSERT_EQUAL_STRING("192.168.1.20", ssh.host.c_str());
+	TEST_ASSERT_EQUAL(static_cast<int>(protocol::SshRequest::Auth::Password), static_cast<int>(ssh.auth));
+	TEST_ASSERT_EQUAL_STRING("pw", ssh.secret.c_str());
+	TEST_ASSERT_TRUE(ssh.hostKey.empty());
+
+	const std::string exec = R"({"host":"nas.local","port":2222,"username":"DOMAIN\\admin","auth":{"type":"key","private_key":"-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n"},"host_key":")" +
+	                         key + R"(","action":"reboot","os":"posix","sudo":true})";
+	TEST_ASSERT_TRUE(parse(exec, true));
+	TEST_ASSERT_EQUAL_UINT16(2222, ssh.port);
+	TEST_ASSERT_EQUAL_STRING("DOMAIN\\admin", ssh.username.c_str());
+	TEST_ASSERT_EQUAL(static_cast<int>(protocol::SshRequest::Auth::Key), static_cast<int>(ssh.auth));
+	TEST_ASSERT_EQUAL_STRING(key.c_str(), ssh.hostKey.c_str());
+	TEST_ASSERT_EQUAL_STRING("sudo -n shutdown -r now", protocol::sshCommand(ssh).c_str());
+
+	ssh.sudo = false;
+	ssh.action = protocol::SshRequest::Action::Shutdown;
+	TEST_ASSERT_EQUAL_STRING("shutdown -h now", protocol::sshCommand(ssh).c_str());
+	ssh.windows = true;
+	TEST_ASSERT_EQUAL_STRING("shutdown /s /t 0", protocol::sshCommand(ssh).c_str());
+	ssh.action = protocol::SshRequest::Action::Reboot;
+	TEST_ASSERT_EQUAL_STRING("shutdown /r /t 0", protocol::sshCommand(ssh).c_str());
+
+	// SSH_EXEC needs a trusted host key, a known action and OS.
+	TEST_ASSERT_FALSE(parse(R"({"host":"h","port":22,"username":"a","auth":{"type":"password","password":"pw"},"host_key":null,"action":"reboot","os":"posix","sudo":false})", true));
+	TEST_ASSERT_FALSE(parse(R"({"host":"h","port":22,"username":"a","auth":{"type":"password","password":"pw"},"host_key":")" + key + R"(","action":"rm -rf /","os":"posix","sudo":false})", true));
+	TEST_ASSERT_FALSE(parse(R"({"host":"h","port":22,"username":"a","auth":{"type":"password","password":"pw"},"host_key":")" + key + R"(","action":"reboot","os":"amiga","sudo":false})", true));
+
+	TEST_ASSERT_FALSE(parse(R"({"host":"","port":22,"username":"a","auth":{"type":"password","password":"pw"}})", false));
+	TEST_ASSERT_FALSE(parse(R"({"host":"a b","port":22,"username":"a","auth":{"type":"password","password":"pw"}})", false));
+	TEST_ASSERT_FALSE(parse(R"({"host":"h","port":0,"username":"a","auth":{"type":"password","password":"pw"}})", false));
+	TEST_ASSERT_FALSE(parse(R"({"host":"h","port":22,"username":"a b","auth":{"type":"password","password":"pw"}})", false));
+	TEST_ASSERT_FALSE(parse(R"({"host":"h","port":22,"username":"a","auth":{"type":"cert","password":"pw"}})", false));
+	TEST_ASSERT_FALSE(parse(R"({"host":"h","port":22,"username":"a","auth":{"type":"password","password":""}})", false));
+	TEST_ASSERT_FALSE(parse(R"({"host":"h","port":22,"username":"a","auth":{"type":"password","password":"pw"},"host_key":"MD5:aa"})", false));
 }
 
 int main(int, char**) {
@@ -406,5 +669,15 @@ int main(int, char**) {
 	RUN_TEST(test_encode_frames);
 	RUN_TEST(test_split_command_line);
 	RUN_TEST(test_hex);
+	RUN_TEST(test_validation);
+	RUN_TEST(test_log_ring_reads_from_a_cursor);
+	RUN_TEST(test_log_ring_drops_old_lines_and_reports_them);
+	RUN_TEST(test_log_ring_limits_bytes_and_line_length);
+	RUN_TEST(test_parse_ota_request);
+	RUN_TEST(test_parse_ota_request_rejects_invalid);
+	RUN_TEST(test_parse_config_request);
+	RUN_TEST(test_parse_log_subscribe);
+	RUN_TEST(test_base64);
+	RUN_TEST(test_parse_ssh_requests);
 	return UNITY_END();
 }

@@ -39,11 +39,25 @@ class Settings {
 	void setStaticIp(const StaticIp& config);
 	void setLogLevel(LogLevel level);
 
+	/**
+	 * Changes the server URL or IP settings for this boot only (CONFIG_SET trial); a restart
+	 * returns to the saved values. Save them with setServerUrl() / setStaticIp().
+	 */
+	void setServerUrlUnsaved(const String& url) { serverUrl_ = url; }
+	void setStaticIpUnsaved(const StaticIp& config) { staticIp_ = config.enabled ? config : StaticIp{}; }
+
+	/** An installed update that hasn't confirmed itself yet (see ota/Rollback.h). */
+	String otaVersion() const { return otaVersion_; }
+	String otaPartition() const { return otaPartition_; }
+	void setOtaMarker(const String& version, const String& partition);
+	void clearOtaMarker();
+
 	/** Erases everything (credentials, Wi-Fi, server). */
 	void factoryReset();
 
    private:
 	String serverUrl_, enrollToken_, tokenId_, secret_, wifiSsid_, wifiPassword_, deviceName_;
+	String otaVersion_, otaPartition_;
 	uint32_t agentId_ = 0;
 	StaticIp staticIp_;
 	LogLevel logLevel_ = LogLevel::Info;

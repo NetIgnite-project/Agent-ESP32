@@ -11,6 +11,7 @@
 #include "net/WifiLink.h"
 #include "netignite/Improv.h"
 #include "netignite/SerialDemux.h"
+#include "ota/OtaWriter.h"
 
 /**
  * The serial port: Improv Wi-Fi for the web installer, and a small text console for setting the
@@ -52,4 +53,11 @@ class SerialConsole {
 
 	bool applyServer(const std::string& url);
 	bool applyEnrollToken(const std::string& token);
+
+#ifdef NETIGNITE_EMULATOR
+	// Emulator builds can't download updates (no network): `ota-begin`, `ota-data` and `ota-end`
+	// feed an image over the serial port instead, to test installing, signatures and rollback.
+	OtaWriter otaWriter_;
+	void cmdOta(const std::vector<std::string>& args);
+#endif
 };

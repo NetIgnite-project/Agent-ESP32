@@ -2,7 +2,7 @@
 //
 // Flow: Wi-Fi (from Improv or the console) → time sync (for HTTPS) → enrollment with a
 // single-use token (from the web installer's NVS image or the console) → WebSocket to the
-// server, which then sends WAKE / STATUS / PING requests.
+// server, which then sends WAKE / STATUS / PING requests, OTA updates and console commands.
 
 #include <Arduino.h>
 
@@ -17,6 +17,7 @@
 #include "net/TimeSync.h"
 #include "net/WifiLink.h"
 #include "netignite/ServerUrl.h"
+#include "ota/Rollback.h"
 #include "serial/SerialConsole.h"
 
 namespace {
@@ -34,6 +35,27 @@ bool phaseLogged = false;
 std::optional<netignite::ServerUrl> server;
 uint32_t nextEnrollAttempt = 0;
 
+/** A restart requested by the server or an installed update, after the answer went out. */
+struct PendingRestart {
+	bool active = false;
+	bool factoryReset = false;
+	uint32_t at = 0;
+} pendingRestart;
+
+/**
+ * A CONFIG_SET that changed the server URL or the IP settings: applied for this boot only, and
+ * saved once the agent reaches the server with it. Otherwise the agent restarts with the saved
+ * settings when `deadline` passes.
+ */
+struct ConfigTrial {
+	bool active = false;
+	bool applyPending = false;
+	bool serverChanged = false;
+	bool ipChanged = false;
+	uint32_t applyAt = 0;
+	uint32_t deadline = 0;
+} trial;
+
 void reloadServer() {
 	server = netignite::parseServerUrl(settings.serverUrl().c_str());
 	if (settings.serverUrl().length() > 0 && !server) {
@@ -46,6 +68,90 @@ void onConfigChanged() {
 	reloadServer();
 	nextEnrollAttempt = 0;
 	phaseLogged = false;
+}
+
+void scheduleRestart(bool factoryReset, uint32_t delayMs) {
+	pendingRestart = {true, factoryReset, millis() + delayMs};
+}
+
+bool applyConfig(const netignite::protocol::ConfigRequest& request, std::string& error) {
+	if ((request.serverUrl || request.ip) && trial.active) {
+		error = "A previous server or network change is still being tried";
+		return false;
+	}
+
+	if (request.name) {
+		settings.setDeviceName(request.name->c_str());
+		Log::info("Name changed to %s (host name after a restart)", request.name->c_str());
+	}
+	if (request.logLevel) {
+		LogLevel level;
+		Log::parseLevel(request.logLevel->c_str(), level);
+		settings.setLogLevel(level);
+		Log::setLevel(level);
+		Log::info("Log level: %s", Log::levelName(level));
+	}
+
+	const bool serverChanged = request.serverUrl && settings.serverUrl() != request.serverUrl->c_str();
+	if (serverChanged) settings.setServerUrlUnsaved(request.serverUrl->c_str());
+
+	if (request.ip) {
+		Settings::StaticIp ip;
+		ip.enabled = request.ip->isStatic;
+		ip.ip = request.ip->address.c_str();
+		ip.gateway = request.ip->gateway.c_str();
+		ip.netmask = request.ip->netmask.c_str();
+		ip.dns1 = request.ip->dns1.c_str();
+		ip.dns2 = request.ip->dns2.c_str();
+		settings.setStaticIpUnsaved(ip);
+	}
+
+	if (serverChanged || request.ip) {
+		// Applied a moment later, so the answer still goes out over the current connection.
+		trial = {true, true, serverChanged, request.ip.has_value(), millis() + 500,
+		         millis() + config::CONFIG_TRIAL_MS};
+		Log::info("Trying the new %s; it is kept once the agent reaches the server (within %lu s)",
+		          serverChanged && request.ip ? "server and network settings"
+		          : serverChanged             ? "server address"
+		                                      : "network settings",
+		          static_cast<unsigned long>(config::CONFIG_TRIAL_MS / 1000));
+	}
+	return true;
+}
+
+/** The agent reached the server: the running firmware and any tried settings work. */
+void onServerConfirmed() {
+	rollback::confirm(settings);
+
+	if (trial.active && !trial.applyPending) {
+		if (trial.serverChanged) settings.setServerUrl(settings.serverUrl());
+		if (trial.ipChanged) settings.setStaticIp(settings.staticIp());
+		trial = {};
+		Log::info("New settings work and are saved");
+	}
+}
+
+void loopTrialAndRestart() {
+	if (trial.active && trial.applyPending && static_cast<int32_t>(millis() - trial.applyAt) >= 0) {
+		trial.applyPending = false;
+		if (trial.ipChanged) wifi.reconnect();
+		onConfigChanged();
+	}
+	if (trial.active && !trial.applyPending && static_cast<int32_t>(millis() - trial.deadline) >= 0) {
+		Log::warn("The agent didn't reach the server with the new settings; restarting with the previous ones");
+		scheduleRestart(false, 200);
+		trial = {};
+	}
+
+	if (pendingRestart.active && static_cast<int32_t>(millis() - pendingRestart.at) >= 0) {
+		if (pendingRestart.factoryReset) {
+			settings.factoryReset();
+			Log::info("All settings erased");
+		}
+		Log::info("Restarting");
+		delay(100);
+		ESP.restart();
+	}
 }
 
 SerialConsole console(settings, wifi, agent, onConfigChanged);
@@ -136,10 +242,21 @@ void setup() {
 	Log::info("%s %s on %s", config::FIRMWARE_NAME, config::FIRMWARE_VERSION, deviceInfo::chip().c_str());
 	Log::info("Device %s (%s), partition %s, reset reason: %s", settings.deviceName().c_str(), deviceInfo::mac().c_str(),
 	          deviceInfo::runningPartition(), deviceInfo::resetReason());
+	rollback::begin(settings);
 
 	reloadServer();
 	wifi.begin();
-	agent.begin();
+	agent.begin({
+		.applyConfig = applyConfig,
+		.restart = [](bool factoryReset) { scheduleRestart(factoryReset, 500); },
+		.serverConfirmed = onServerConfirmed,
+		.updateInstalled =
+			[](const std::string& version) {
+				rollback::recordInstalled(settings, version.c_str());
+				Log::info("Restarting into firmware %s", version.c_str());
+				scheduleRestart(false, 1000);
+			},
+	});
 }
 
 void loop() {
@@ -147,5 +264,7 @@ void loop() {
 	wifi.loop();
 	runAgent();
 	agent.loop();
+	rollback::loop();
+	loopTrialAndRestart();
 	delay(2);
 }

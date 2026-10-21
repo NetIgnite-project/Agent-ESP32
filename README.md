@@ -59,6 +59,21 @@ NetIgnite protocol v2 (JSON frames; see `lib/netignite_core/src/netignite/Protoc
   address) and/or tries a TCP port. A refused TCP connection also counts as online. Host names
   resolve to IPv4 and IPv6 addresses.
 - `PING`: keep-alive. Without any message from the server for 100 s, the agent reconnects.
+- `OTA_BEGIN`: downloads a firmware image from its server (with its own credential), checks its
+  size and SHA-256 and, if the firmware has a public key compiled in, its signature, writes it to
+  the other app slot and restarts. The new firmware is on probation until it reaches the server;
+  if it crashes or doesn't get there within 5 minutes, the bootloader starts the previous firmware
+  again, and the agent reports the failed version in its HELLO.
+- `GET_LOGS`, `LOG_SUBSCRIBE`: the last 16 KB of log lines (also ESP-IDF's own messages), and new
+  lines as `LOG` events, for the dashboard's console.
+- `CONFIG_SET`: server address, host name, log level and IP settings. A new server address or IP
+  setting is tried first and only saved once the agent reaches the server with it; otherwise the
+  agent restarts with the previous settings after 2 minutes.
+- `SSH_CHECK`, `SSH_EXEC`: logs in to a device in its network over SSH (libssh) with the login the
+  server stores for that device. A check only authenticates and never opens a session; a command
+  needs the trusted host key and runs only `[sudo -n ]shutdown -h|-r now` or
+  `shutdown /s|/r /t 0`. The password or key is wiped from memory after each login.
+- `GET_INFO`, `REBOOT`, `FACTORY_RESET`.
 
 HTTPS servers need a certificate from a public CA. For a private CA, put its certificate (`.pem`
 or `.der`) into `data/cert/custom/` before building.
@@ -86,7 +101,8 @@ python scripts/check_size.py       # the firmware must stay below 85 % of an OTA
 ```
 
 `test/emulator/` boots the firmware in Espressif's QEMU and tests Improv and the console with the
-same client ESP Web Tools uses. QEMU has no Wi-Fi, so networking needs a real board.
+same client ESP Web Tools uses, and OTA updates (signature checks, probation, rollback) with images
+sent over the serial port. QEMU has no Wi-Fi, so networking needs a real board.
 
 ## Releases
 
@@ -96,7 +112,10 @@ emulator test, then a GitHub release with `bootloader.bin`, `partitions.bin`, `b
 describes the parts for the NetIgnite server's web installer.
 
 Releases are signed when the repository secret `FIRMWARE_SIGNING_KEY` is set; create the key pair
-with `sh scripts/generate_signing_key.sh` and commit only the public key.
+with `sh scripts/generate_signing_key.sh` and commit only the public key
+(`keys/firmware-signing.pub.pem`). Once that file exists, `scripts/signing_key.py` compiles it into
+the firmware, and the agent only installs OTA updates with a valid signature. Set the same public
+key as `NETIGNITE_FIRMWARE_PUBLIC_KEY` on the server, so it only offers signed releases.
 
 ## License
 

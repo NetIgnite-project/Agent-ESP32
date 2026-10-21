@@ -76,6 +76,9 @@ void Settings::load() {
 	staticIp_.dns1 = readString(*store, k::DNS1);
 	staticIp_.dns2 = readString(*store, k::DNS2);
 
+	otaVersion_ = readString(*store, k::OTA_VERSION);
+	otaPartition_ = readString(*store, k::OTA_PARTITION);
+
 	const uint8_t level = store->getUChar(k::LOG_LEVEL, static_cast<uint8_t>(LogLevel::Info));
 	logLevel_ = level <= static_cast<uint8_t>(LogLevel::Debug) ? static_cast<LogLevel>(level) : LogLevel::Info;
 }
@@ -143,6 +146,19 @@ void Settings::setLogLevel(LogLevel level) {
 	Store store(false);
 	store->putUChar(k::LOG_LEVEL, static_cast<uint8_t>(level));
 	logLevel_ = level;
+}
+
+void Settings::setOtaMarker(const String& version, const String& partition) {
+	Store store(false);
+	writeString(*store, k::OTA_VERSION, version);
+	writeString(*store, k::OTA_PARTITION, partition);
+	otaVersion_ = version;
+	otaPartition_ = partition;
+}
+
+void Settings::clearOtaMarker() {
+	if (otaVersion_.length() == 0 && otaPartition_.length() == 0) return;
+	setOtaMarker("", "");
 }
 
 void Settings::factoryReset() {

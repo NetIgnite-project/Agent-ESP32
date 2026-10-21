@@ -106,6 +106,17 @@ async function command(line: string, expect: string, timeoutMs = 8000) {
 	return (await waitFor(expect, timeoutMs, from)) >= 0;
 }
 
+/**
+ * Right after a restart the emulated UART sometimes loses the first input on slow CI runners (it
+ * made the v2.0.0-beta.1 tag build fail); repeat the harmless command a few times.
+ */
+async function commandAfterRestart(line: string, expect: string) {
+	for (let attempt = 0; attempt < 3; attempt++) {
+		if (await command(line, expect)) return true;
+	}
+	return false;
+}
+
 const logger = { log() {}, error() {}, debug() {} };
 
 try {
@@ -185,7 +196,7 @@ try {
 	const afterReset = transcript.length;
 	await waitFor("I Device NetIgnite-", BOOT_TIMEOUT_MS, afterReset);
 	await sleep(1500);
-	check("after the reset the agent is unconfigured", await command("status", "server:    not set"));
+	check("after the reset the agent is unconfigured", await commandAfterRestart("status", "server:    not set"));
 } catch (error) {
 	check("test ran to the end", false, String(error));
 } finally {

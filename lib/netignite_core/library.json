@@ -1,0 +1,10 @@
+{
+	"name": "netignite_core",
+	"version": "2.0.0",
+	"description": "Hardware-independent parts of the NetIgnite agent firmware: parsers and encoders for MAC addresses, server URLs, the agent protocol, Improv Serial and Wake-on-LAN. Unit-tested on the host (pio test -e native).",
+	"frameworks": "*",
+	"platforms": "*",
+	"build": {
+		"flags": ["-DARDUINOJSON_ENABLE_STD_STRING=1"]
+	}
+}

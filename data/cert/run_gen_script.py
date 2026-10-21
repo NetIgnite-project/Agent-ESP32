@@ -10,11 +10,14 @@ when its content changes, so it doesn't trigger a rebuild on every run.
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 
 Import("env")  # noqa: F821 - provided by PlatformIO (SCons)
 
-PYTHON = env.subst("$PYTHONEXE")  # noqa: F821
+# The interpreter running this script: the cryptography check below and the generator must use the
+# same one (pioarduino runs the build in its own environment, separate from $PYTHONEXE).
+PYTHON = sys.executable
 CERT_DIR = os.path.join(env.subst("$PROJECT_DIR"), "data", "cert")  # noqa: F821
 CUSTOM_DIR = os.path.join(CERT_DIR, "custom")
 BUNDLE_PATH = os.path.join(CERT_DIR, "x509_crt_bundle.bin")
@@ -49,7 +52,8 @@ def generate_bundle():
         subprocess.check_call(
             [PYTHON, os.path.join(CERT_DIR, "gen_crt_bundle.py"), "--quiet", "--input", *certificate_inputs()],
             cwd=work_dir,
-            env=dict(os.environ, PYTHONWARNINGS="ignore"),
+            # The same import path as this process (pioarduino adds its own packages to it).
+            env=dict(os.environ, PYTHONWARNINGS="ignore", PYTHONPATH=os.pathsep.join(p for p in sys.path if p)),
         )
         with open(os.path.join(work_dir, "x509_crt_bundle"), "rb") as f:
             bundle = f.read()

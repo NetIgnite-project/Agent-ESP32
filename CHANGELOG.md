@@ -1,6 +1,18 @@
 # Changelog
 
-## 2.0.0-beta.2 (unreleased)
+## 2.0.0 (2026-10-21)
+
+The first stable release of the ESP32 firmware v2, for NetIgnite server 2.0.0. No changes since
+2.0.0-beta.2; everything it can do is listed below.
+
+### Upgrading from v1
+
+Boards with the v1 firmware (built with PlatformIO and `config.h`) can't connect to a v2 server.
+Install 2.0.0 once over USB with the dashboard's web installer (the agent's **Install** tab, in
+Chrome, Edge or Firefox 151+): the partition table changed for updates over the network. Later
+versions install over the network.
+
+## 2.0.0-beta.2 (2026-10-21)
 
 Needs NetIgnite server 2.0.0-beta.2 or newer for updates, the console and SSH.
 

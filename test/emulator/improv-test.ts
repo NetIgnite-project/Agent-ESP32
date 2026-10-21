@@ -24,53 +24,73 @@ flash.set(factory, 0);
 const flashPath = `${workDir}/flash-improv.bin`;
 await Bun.write(flashPath, flash);
 
-const qemu = Bun.spawn(
-	[
-		qemuPath,
-		"-nographic",
-		"-machine",
-		"esp32",
-		"-drive",
-		`file=${flashPath},if=mtd,format=raw`,
-		"-serial",
-		`tcp:127.0.0.1:${PORT},server,wait=on`,
-		"-monitor",
-		"none",
-		// Like ESP-IDF's own QEMU runner: an emulated chip on a slow host would otherwise be reset by
-		// the timer-group watchdogs during boot, over and over.
-		"-global",
-		"driver=timer.esp32.timg,property=wdt_disable,value=true",
-	],
-	{ stdout: "ignore", stderr: "inherit" },
-);
-
-// --- Serial port shim (Web Serial-like readable/writable over the TCP socket) ----------------------
+// --- QEMU and a serial port shim (Web Serial-like readable/writable over the TCP socket) ----------
 let transcript = "";
 let controller: ReadableStreamDefaultController<Uint8Array> | null = null;
-
+let qemu: ReturnType<typeof Bun.spawn>;
 let socket: Awaited<ReturnType<typeof Bun.connect>> | null = null;
-for (let attempt = 0; attempt < 50 && !socket; attempt++) {
-	try {
-		socket = await Bun.connect({
-			hostname: "127.0.0.1",
-			port: PORT,
-			socket: {
-				data(_s, data) {
-					const bytes = new Uint8Array(data);
-					transcript += new TextDecoder().decode(bytes);
-					try {
-						controller?.enqueue(bytes);
-					} catch {
-						controller = null;
-					}
+
+async function startQemu() {
+	qemu = Bun.spawn(
+		[
+			qemuPath,
+			"-nographic",
+			"-machine",
+			"esp32",
+			"-drive",
+			`file=${flashPath},if=mtd,format=raw`,
+			"-serial",
+			`tcp:127.0.0.1:${PORT},server,wait=on`,
+			"-monitor",
+			"none",
+			// Like ESP-IDF's own QEMU runner: an emulated chip on a slow host would otherwise be reset by
+			// the timer-group watchdogs during boot, over and over.
+			"-global",
+			"driver=timer.esp32.timg,property=wdt_disable,value=true",
+		],
+		{ stdout: "ignore", stderr: "inherit" },
+	);
+
+	socket = null;
+	for (let attempt = 0; attempt < 50 && !socket; attempt++) {
+		try {
+			socket = await Bun.connect({
+				hostname: "127.0.0.1",
+				port: PORT,
+				socket: {
+					data(_s, data) {
+						const bytes = new Uint8Array(data);
+						transcript += new TextDecoder().decode(bytes);
+						try {
+							controller?.enqueue(bytes);
+						} catch {
+							controller = null;
+						}
+					},
 				},
-			},
-		});
-	} catch {
-		await sleep(200);
+			});
+		} catch {
+			await sleep(200);
+		}
 	}
+	if (!socket) throw new Error("QEMU serial port didn't open");
 }
-if (!socket) throw new Error("QEMU serial port didn't open");
+
+/**
+ * Restarts the emulated chip from power-on (the flash file keeps what was written). Used instead
+ * of the firmware's own restart: QEMU keeps peripheral state across a software restart that a real
+ * chip resets, and an interrupt left over from before (e.g. from serial input that is still
+ * arriving) crashes the next boot in the task watchdog's handler.
+ */
+async function powerCycle() {
+	socket?.end();
+	qemu.kill();
+	await qemu.exited;
+	transcript += "\n--- power cycle ---\n";
+	await startQemu();
+}
+
+await startQemu();
 
 const port = {
 	get readable() {
@@ -100,16 +120,23 @@ async function waitFor(text: string, timeoutMs: number, from = 0) {
 	return -1;
 }
 
+/**
+ * Sends a console line, followed by empty lines (which the console ignores): QEMU's UART only hands
+ * received bytes to the firmware in blocks of its FIFO threshold, so a short line can otherwise
+ * wait for more input. It did on CI runners after a restart (and made the v2.0.0-beta.1 tag build
+ * fail). A real UART flushes on its idle timeout.
+ */
+function sendLine(line: string) {
+	socket!.write(`${line}\n${"\n".repeat(128)}`);
+}
+
 async function command(line: string, expect: string, timeoutMs = 8000) {
 	const from = transcript.length;
-	socket!.write(`${line}\n`);
+	sendLine(line);
 	return (await waitFor(expect, timeoutMs, from)) >= 0;
 }
 
-/**
- * Right after a restart the emulated UART sometimes loses the first input on slow CI runners (it
- * made the v2.0.0-beta.1 tag build fail); repeat the harmless command a few times.
- */
+/** Right after a restart the console may not run yet on slow runners: repeat the harmless command. */
 async function commandAfterRestart(line: string, expect: string) {
 	for (let attempt = 0; attempt < 3; attempt++) {
 		if (await command(line, expect)) return true;
@@ -174,14 +201,18 @@ try {
 	check("enrollment token never printed", !transcript.includes("netignite_enroll_abc:def"));
 
 	// --- Settings survive a restart ---------------------------------------------------------------
+	check("reboot command restarts", await command("reboot", "Restarting..."));
+	await powerCycle();
 	const beforeReboot = transcript.length;
-	socket.write("reboot\n");
-	check("reboots", (await waitFor("I Device kitchen-esp", BOOT_TIMEOUT_MS, beforeReboot)) >= 0);
+	check("boots again with its settings", (await waitFor("I Device kitchen-esp", BOOT_TIMEOUT_MS, beforeReboot)) >= 0);
 	await waitFor("[", 5000, transcript.length);
 	await sleep(1500);
-	const statusFrom = transcript.length;
-	socket.write("status\n");
-	await waitFor("partition:", 8000, statusFrom);
+	let statusFrom = transcript.length;
+	for (let attempt = 0; attempt < 3; attempt++) {
+		statusFrom = transcript.length;
+		sendLine("status");
+		if ((await waitFor("partition:", 8000, statusFrom)) >= 0) break;
+	}
 	const status = transcript.slice(statusFrom);
 	check("server URL persisted", status.includes("server:    http://[fd00::1]:18232"), status);
 	check("device name persisted", status.includes("device:    kitchen-esp"), status);
@@ -193,6 +224,7 @@ try {
 	await improv2.close();
 
 	check("factory reset erases everything", await command("factory-reset confirm", "All settings erased"));
+	await powerCycle();
 	const afterReset = transcript.length;
 	await waitFor("I Device NetIgnite-", BOOT_TIMEOUT_MS, afterReset);
 	await sleep(1500);

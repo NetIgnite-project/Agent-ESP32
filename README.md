@@ -1,11 +1,12 @@
 # NetIgnite ESP32 Agent
 
 Firmware that turns an ESP32 into a [NetIgnite](https://netignite.dev) agent: it joins your Wi-Fi,
-keeps a connection to your NetIgnite server, sends Wake-on-LAN packets and checks whether devices
-in its network are online.
+keeps a connection to your NetIgnite server, sends Wake-on-LAN packets, checks whether devices in
+its network are online and can shut them down over SSH. It updates itself over the network.
 
 > **v2 (in development).** Works with NetIgnite server v2. Configuration no longer lives in
-> `config.h`: the agent is set up over the serial port (and, soon, from the browser).
+> `config.h`: the agent is set up from the browser with the server's web installer, or over the
+> serial port.
 
 ## Hardware
 
@@ -14,6 +15,15 @@ in its network are online.
 - In the same network (subnet) as the devices it wakes: Wake-on-LAN broadcasts don't cross routers.
 
 ## Set up an agent
+
+The easiest way is the server's **web installer**: in the NetIgnite dashboard, **Agents → Add
+agent → ESP32**, then the agent's **Install** tab. It flashes the firmware from the browser
+(Chrome, Edge or Firefox 151+, over HTTPS) together with an NVS image that holds the server URL,
+the agent's name and a single-use enrollment token, and then sends your Wi-Fi settings to the
+ESP32 with [Improv Wi-Fi](https://www.improv-wifi.com/serial/). The Wi-Fi password never reaches
+the server. The installer also changes the Wi-Fi of an installed agent.
+
+Without the installer, over the serial port:
 
 1. In the NetIgnite dashboard: **Agents → Add agent → ESP32**.
 2. Flash the firmware (see [Build and flash](#build-and-flash)) and open the serial console
@@ -29,10 +39,6 @@ in its network are online.
 
 The agent enrolls once with that single-use token. It generates its own secret with the hardware
 random number generator; the server only stores a hash of it, and it is never shown or printed.
-
-The web installer will do steps 2–4 from the browser: it writes the server URL and a token into
-the agent's NVS partition while flashing, and sends the Wi-Fi settings with
-[Improv Wi-Fi](https://www.improv-wifi.com/serial/), which the firmware already supports.
 
 ## Console commands
 

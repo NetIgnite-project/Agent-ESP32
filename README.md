@@ -75,10 +75,14 @@ NetIgnite protocol v2 (JSON frames; see `lib/netignite_core/src/netignite/Protoc
 - `CONFIG_SET`: server address, host name, log level and IP settings. A new server address or IP
   setting is tried first and only saved once the agent reaches the server with it; otherwise the
   agent restarts with the previous settings after 2 minutes.
-- `SSH_CHECK`, `SSH_EXEC`: logs in to a device in its network over SSH (libssh) with the login the
-  server stores for that device. A check only authenticates and never opens a session; a command
-  needs the trusted host key and runs only `[sudo -n ]shutdown -h|-r now` or
-  `shutdown /s|/r /t 0`. The password or key is wiped from memory after each login.
+- `SSH_CHECK`, `SSH_POWER`: logs in to a device in its network over SSH (libssh) with the agent's
+  own keys: two Ed25519 key pairs, one for shutdown and one for reboot, created on first boot and
+  kept in NVS. HELLO reports only the public keys (`ssh_keys`, with the capability `ssh.power`);
+  the server never has a credential. A check logs in with each key and never opens a session;
+  `SSH_POWER` needs the trusted host key and requests only `[sudo -n ]shutdown -h|-r now` or
+  `shutdown /s|/r /t 0` (the device's authorized_keys line forces the same command). Only over an
+  `https://` server address, and at most 10 SSH logins a minute. `status` on the serial console
+  shows the keys' fingerprints; a factory reset or a new install creates new keys.
 - `GET_INFO`, `REBOOT`, `FACTORY_RESET`.
 
 HTTPS servers need a certificate from a public CA. For a private CA, put its certificate (`.pem`

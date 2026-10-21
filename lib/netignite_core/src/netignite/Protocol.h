@@ -23,7 +23,7 @@
  *   {"t":"evt","cmd":"HELLO","p":{...}}              agent → server, first frame
  *
  * Requests: PING, WAKE, STATUS, OTA_BEGIN, LOG_SUBSCRIBE, GET_LOGS, GET_INFO, CONFIG_SET, REBOOT,
- * FACTORY_RESET, SSH_CHECK, SSH_EXEC. Events: HELLO, LOG, OTA_PROGRESS.
+ * FACTORY_RESET, SSH_CHECK, SSH_POWER. Events: HELLO, LOG, OTA_PROGRESS.
  */
 namespace netignite::protocol {
 
@@ -34,8 +34,13 @@ constexpr const char* AGENT_KIND = "esp32";
 constexpr const char* CAPABILITIES[] = {
 	"wake", "status.link_local", "status.ip", "status.host",   "status.tcp",
 	"ota",  "logs",              "config",    "device.reboot", "device.reset",
-	"ssh",
 };
+
+/**
+ * SSH_CHECK and SSH_POWER with the agent's own keys; only announced (with HELLO `ssh_keys`) when
+ * the keys are ready and the server connection uses TLS.
+ */
+constexpr const char* SSH_CAPABILITY = "ssh.power";
 
 /** Largest firmware image: one OTA slot in partitions.csv. */
 constexpr uint32_t MAX_FIRMWARE_SIZE = 0x1E0000;
@@ -114,30 +119,28 @@ bool parseConfigRequest(JsonObjectConst payload, ConfigRequest& out, std::string
 bool parseLogSubscribe(JsonObjectConst payload, bool& enabled, std::string& error);
 
 /**
- * SSH_CHECK (log in, no session) and SSH_EXEC (log in with a trusted host key and run the fixed
- * shutdown or reboot command). The secret is a password or an OpenSSH private key.
+ * SSH_CHECK (log in with each of the agent's keys, no session) and SSH_POWER (log in with the
+ * action's key, with a trusted host key, and request the fixed shutdown or reboot command). No
+ * credentials: the server only says where to log in.
  */
 struct SshRequest {
-	enum class Auth { Password, Key };
 	enum class Action { Shutdown, Reboot };
 
 	std::string host;
 	uint16_t port = 22;
 	std::string username;
-	Auth auth = Auth::Password;
-	std::string secret;
-	/** Trusted host key fingerprint (`SHA256:...`), or empty. Required for SSH_EXEC. */
+	/** Trusted host key fingerprint (`SHA256:...`), or empty. Required for SSH_POWER. */
 	std::string hostKey;
 
-	// SSH_EXEC only
+	// SSH_POWER only
 	Action action = Action::Shutdown;
 	bool windows = false;
 	bool sudo = false;
 };
 
-bool parseSshRequest(JsonObjectConst payload, bool exec, SshRequest& out, std::string& error);
+bool parseSshRequest(JsonObjectConst payload, bool power, SshRequest& out, std::string& error);
 
-/** The command SSH_EXEC runs: `[sudo -n ]shutdown -h|-r now`, or `shutdown /s|/r /t 0`. */
+/** The command SSH_POWER requests: `[sudo -n ]shutdown -h|-r now`, or `shutdown /s|/r /t 0`. */
 std::string sshCommand(const SshRequest& request);
 
 /** OpenSSH's fingerprint of a host key from its SHA-256: `SHA256:` + unpadded base64. */

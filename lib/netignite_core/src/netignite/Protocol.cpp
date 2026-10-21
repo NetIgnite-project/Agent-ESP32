@@ -333,7 +333,7 @@ bool base64Char(char c) {
 
 }  // namespace
 
-bool parseSshRequest(JsonObjectConst payload, bool exec, SshRequest& out, std::string& error) {
+bool parseSshRequest(JsonObjectConst payload, bool power, SshRequest& out, std::string& error) {
 	out = SshRequest{};
 
 	const char* host = payload["host"];
@@ -361,25 +361,6 @@ bool parseSshRequest(JsonObjectConst payload, bool exec, SshRequest& out, std::s
 	}
 	out.username = std::string(u);
 
-	JsonObjectConst auth = payload["auth"];
-	const char* type = auth["type"];
-	const char* secret = nullptr;
-	if (type && std::string_view(type) == "password") {
-		out.auth = SshRequest::Auth::Password;
-		secret = auth["password"];
-	} else if (type && std::string_view(type) == "key") {
-		out.auth = SshRequest::Auth::Key;
-		secret = auth["private_key"];
-	} else {
-		error = "Unknown auth type";
-		return false;
-	}
-	if (!secret || !*secret || std::string_view(secret).size() > 8192) {
-		error = "Missing password or key";
-		return false;
-	}
-	out.secret = secret;
-
 	JsonVariantConst hostKey = payload["host_key"];
 	if (!hostKey.isNull()) {
 		const char* text = hostKey.as<const char*>();
@@ -393,7 +374,7 @@ bool parseSshRequest(JsonObjectConst payload, bool exec, SshRequest& out, std::s
 		out.hostKey = std::string(k);
 	}
 
-	if (!exec) return true;
+	if (!power) return true;
 
 	if (out.hostKey.empty()) {
 		error = "A trusted host key is required";

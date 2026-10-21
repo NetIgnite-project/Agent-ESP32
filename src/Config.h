@@ -37,6 +37,9 @@ constexpr const char* LOG_LEVEL = "log_level";
 /** Version and partition of an installed update until it confirms itself (ota/Rollback.h). */
 constexpr const char* OTA_VERSION = "ota_ver";
 constexpr const char* OTA_PARTITION = "ota_part";
+/** The agent's SSH private keys (OpenSSH format), created on first boot (agent/SshWorker.h). */
+constexpr const char* SSH_KEY_SHUTDOWN = "ssh_shutdown";
+constexpr const char* SSH_KEY_REBOOT = "ssh_reboot";
 }  // namespace keys
 
 constexpr uint32_t SERIAL_BAUD = 115200;

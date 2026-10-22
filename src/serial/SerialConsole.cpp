@@ -250,6 +250,12 @@ void SerialConsole::printStatus() {
 		Log::print("  firmware:  the update to %s failed and was rolled back", rollback::failedUpdate().c_str());
 	}
 	Log::print("  updates:   %s", OtaWriter::requiresSignature() ? "signed only" : "checked by SHA-256");
+	if (agent_.ssh().ready()) {
+		Log::print("  ssh keys:  shutdown %s", agent_.ssh().fingerprint(SshWorker::Action::Shutdown).c_str());
+		Log::print("             reboot   %s", agent_.ssh().fingerprint(SshWorker::Action::Reboot).c_str());
+	} else {
+		Log::print("  ssh keys:  none (SSH is off)");
+	}
 }
 
 void SerialConsole::cmdWifi(const std::vector<std::string>& args) {

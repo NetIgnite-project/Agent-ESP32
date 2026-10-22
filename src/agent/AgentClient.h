@@ -45,6 +45,7 @@ class AgentClient {
 	State state() const;
 	bool running() const { return running_; }
 	const OtaUpdater& ota() const { return ota_; }
+	const SshWorker& ssh() const { return ssh_; }
 
    private:
 	Settings& settings_;
@@ -81,6 +82,8 @@ class AgentClient {
 	void handleText(std::string_view text);
 	void handleRequest(const netignite::protocol::Frame& frame);
 	void sendHello();
+	/** SSH logins to devices: only with the agent's keys and a TLS connection to the server. */
+	bool sshAvailable() const { return ssh_.ready() && server_.secure; }
 	void send(const std::string& frame);
 	void sendLogs();
 	void reportOta();

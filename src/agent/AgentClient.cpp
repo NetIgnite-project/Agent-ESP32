@@ -16,7 +16,7 @@ namespace protocol = netignite::protocol;
 void AgentClient::begin(Hooks hooks) {
 	hooks_ = std::move(hooks);
 	worker_.begin();
-	ssh_.begin();
+	ssh_.begin(settings_);
 	ws_.onEvent([this](WStype_t type, uint8_t* payload, size_t length) { onEvent(type, payload, length); });
 }
 
@@ -86,14 +86,15 @@ void AgentClient::loop() {
 		if (ssh.generation != generation_ || !connected_) continue;
 		if (!ssh.ok) {
 			send(protocol::encodeError(ssh.requestId, ssh.error));
-		} else if (ssh.exec) {
+		} else if (ssh.power) {
 			send(protocol::encodeEmptyResponse(ssh.requestId));
 		} else {
 			JsonDocument payload;
 			payload["online"] = ssh.online;
 			if (ssh.online) {
 				if (ssh.hostKey[0] != '\0') payload["host_key"] = ssh.hostKey;
-				payload["authenticated"] = ssh.authenticated;
+				payload["shutdown"] = ssh.shutdownAccepted;
+				payload["reboot"] = ssh.rebootAccepted;
 				if (ssh.checkError[0] != '\0') payload["error"] = ssh.checkError;
 			}
 			send(protocol::encodeResponse(ssh.requestId, payload.as<JsonObjectConst>()));
@@ -173,6 +174,12 @@ void AgentClient::sendHello() {
 
 	JsonArray capabilities = hello["capabilities"].to<JsonArray>();
 	for (const char* capability : protocol::CAPABILITIES) capabilities.add(capability);
+	if (sshAvailable()) {
+		capabilities.add(protocol::SSH_CAPABILITY);
+		JsonObject keys = hello["ssh_keys"].to<JsonObject>();
+		keys["shutdown"] = ssh_.publicKey(SshWorker::Action::Shutdown);
+		keys["reboot"] = ssh_.publicKey(SshWorker::Action::Reboot);
+	}
 
 	fillInfo(hello["info"].to<JsonObject>());
 
@@ -281,15 +288,30 @@ void AgentClient::handleRequest(const protocol::Frame& frame) {
 		return;
 	}
 
-	if (cmd == "SSH_CHECK" || cmd == "SSH_EXEC") {
-		const bool exec = cmd == "SSH_EXEC";
+	if (cmd == "SSH_CHECK" || cmd == "SSH_POWER") {
+		if (!server_.secure) {
+			send(protocol::encodeError(frame.id, "SSH needs an https:// server address (the agent connects without TLS)"));
+			return;
+		}
+		if (!ssh_.ready()) {
+			send(protocol::encodeError(frame.id, "This agent has no SSH keys"));
+			return;
+		}
+		const bool power = cmd == "SSH_POWER";
 		protocol::SshRequest request;
-		if (!protocol::parseSshRequest(frame.payload, exec, request, error)) {
+		if (!protocol::parseSshRequest(frame.payload, power, request, error)) {
 			send(protocol::encodeError(frame.id, error));
 			return;
 		}
-		if (!ssh_.submit(frame.id, generation_, exec, request)) {
-			send(protocol::encodeError(frame.id, "Another SSH login is running"));
+		switch (ssh_.submit(frame.id, generation_, power, request)) {
+			case SshWorker::Submit::Started:
+				break;
+			case SshWorker::Submit::Busy:
+				send(protocol::encodeError(frame.id, "Another SSH login is running"));
+				break;
+			case SshWorker::Submit::TooManyLogins:
+				send(protocol::encodeError(frame.id, "Too many SSH logins (at most 10 a minute); try again shortly"));
+				break;
 		}
 		return;
 	}

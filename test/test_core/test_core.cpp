@@ -599,24 +599,25 @@ void test_parse_ssh_requests() {
 	std::string error;
 	protocol::SshRequest ssh;
 	const std::string key = "SHA256:" + std::string(43, 'b');
-	auto parse = [&](const std::string& payload, bool exec) {
+	auto parse = [&](const std::string& payload, bool power) {
 		protocol::parseFrame(R"({"t":"req","id":1,"cmd":"SSH","p":)" + payload + "}", doc, frame, error);
-		return protocol::parseSshRequest(frame.payload, exec, ssh, error);
+		return protocol::parseSshRequest(frame.payload, power, ssh, error);
 	};
 
-	TEST_ASSERT_TRUE(parse(R"({"host":"192.168.1.20","port":22,"username":"admin","auth":{"type":"password","password":"pw"},"host_key":null})", false));
+	// No credentials: the agent logs in with its own keys. Extra fields (old `auth`) are ignored.
+	TEST_ASSERT_TRUE(parse(R"({"host":"192.168.1.20","port":22,"username":"netignite","host_key":null})", false));
 	TEST_ASSERT_EQUAL_STRING("192.168.1.20", ssh.host.c_str());
-	TEST_ASSERT_EQUAL(static_cast<int>(protocol::SshRequest::Auth::Password), static_cast<int>(ssh.auth));
-	TEST_ASSERT_EQUAL_STRING("pw", ssh.secret.c_str());
+	TEST_ASSERT_EQUAL_STRING("netignite", ssh.username.c_str());
 	TEST_ASSERT_TRUE(ssh.hostKey.empty());
+	TEST_ASSERT_TRUE(parse(R"({"host":"h","port":22,"username":"a","auth":{"type":"password","password":"pw"}})", false));
 
-	const std::string exec = R"({"host":"nas.local","port":2222,"username":"DOMAIN\\admin","auth":{"type":"key","private_key":"-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n"},"host_key":")" +
-	                         key + R"(","action":"reboot","os":"posix","sudo":true})";
-	TEST_ASSERT_TRUE(parse(exec, true));
+	const std::string power = R"({"host":"nas.local","port":2222,"username":"DOMAIN\\admin","host_key":")" + key +
+	                          R"(","action":"reboot","os":"posix","sudo":true})";
+	TEST_ASSERT_TRUE(parse(power, true));
 	TEST_ASSERT_EQUAL_UINT16(2222, ssh.port);
 	TEST_ASSERT_EQUAL_STRING("DOMAIN\\admin", ssh.username.c_str());
-	TEST_ASSERT_EQUAL(static_cast<int>(protocol::SshRequest::Auth::Key), static_cast<int>(ssh.auth));
 	TEST_ASSERT_EQUAL_STRING(key.c_str(), ssh.hostKey.c_str());
+	TEST_ASSERT_EQUAL(static_cast<int>(protocol::SshRequest::Action::Reboot), static_cast<int>(ssh.action));
 	TEST_ASSERT_EQUAL_STRING("sudo -n shutdown -r now", protocol::sshCommand(ssh).c_str());
 
 	ssh.sudo = false;
@@ -627,18 +628,18 @@ void test_parse_ssh_requests() {
 	ssh.action = protocol::SshRequest::Action::Reboot;
 	TEST_ASSERT_EQUAL_STRING("shutdown /r /t 0", protocol::sshCommand(ssh).c_str());
 
-	// SSH_EXEC needs a trusted host key, a known action and OS.
-	TEST_ASSERT_FALSE(parse(R"({"host":"h","port":22,"username":"a","auth":{"type":"password","password":"pw"},"host_key":null,"action":"reboot","os":"posix","sudo":false})", true));
-	TEST_ASSERT_FALSE(parse(R"({"host":"h","port":22,"username":"a","auth":{"type":"password","password":"pw"},"host_key":")" + key + R"(","action":"rm -rf /","os":"posix","sudo":false})", true));
-	TEST_ASSERT_FALSE(parse(R"({"host":"h","port":22,"username":"a","auth":{"type":"password","password":"pw"},"host_key":")" + key + R"(","action":"reboot","os":"amiga","sudo":false})", true));
+	// SSH_POWER needs a trusted host key, a known action and OS.
+	TEST_ASSERT_FALSE(parse(R"({"host":"h","port":22,"username":"a","host_key":null,"action":"reboot","os":"posix","sudo":false})", true));
+	TEST_ASSERT_FALSE(parse(R"({"host":"h","port":22,"username":"a","host_key":")" + key + R"(","action":"rm -rf /","os":"posix","sudo":false})", true));
+	TEST_ASSERT_FALSE(parse(R"({"host":"h","port":22,"username":"a","host_key":")" + key + R"(","action":"reboot","os":"amiga","sudo":false})", true));
+	TEST_ASSERT_FALSE(parse(R"({"host":"h","port":22,"username":"a","host_key":")" + key + R"(","action":"reboot","os":"posix"})", true));
 
-	TEST_ASSERT_FALSE(parse(R"({"host":"","port":22,"username":"a","auth":{"type":"password","password":"pw"}})", false));
-	TEST_ASSERT_FALSE(parse(R"({"host":"a b","port":22,"username":"a","auth":{"type":"password","password":"pw"}})", false));
-	TEST_ASSERT_FALSE(parse(R"({"host":"h","port":0,"username":"a","auth":{"type":"password","password":"pw"}})", false));
-	TEST_ASSERT_FALSE(parse(R"({"host":"h","port":22,"username":"a b","auth":{"type":"password","password":"pw"}})", false));
-	TEST_ASSERT_FALSE(parse(R"({"host":"h","port":22,"username":"a","auth":{"type":"cert","password":"pw"}})", false));
-	TEST_ASSERT_FALSE(parse(R"({"host":"h","port":22,"username":"a","auth":{"type":"password","password":""}})", false));
-	TEST_ASSERT_FALSE(parse(R"({"host":"h","port":22,"username":"a","auth":{"type":"password","password":"pw"},"host_key":"MD5:aa"})", false));
+	TEST_ASSERT_FALSE(parse(R"({"host":"","port":22,"username":"a"})", false));
+	TEST_ASSERT_FALSE(parse(R"({"host":"a b","port":22,"username":"a"})", false));
+	TEST_ASSERT_FALSE(parse(R"({"host":"h","port":0,"username":"a"})", false));
+	TEST_ASSERT_FALSE(parse(R"({"host":"h","port":22,"username":"a b"})", false));
+	TEST_ASSERT_FALSE(parse(R"({"host":"h","port":22,"username":""})", false));
+	TEST_ASSERT_FALSE(parse(R"({"host":"h","port":22,"username":"a","host_key":"MD5:aa"})", false));
 }
 
 int main(int, char**) {

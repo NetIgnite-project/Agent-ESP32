@@ -46,6 +46,11 @@ class Settings {
 	void setServerUrlUnsaved(const String& url) { serverUrl_ = url; }
 	void setStaticIpUnsaved(const StaticIp& config) { staticIp_ = config.enabled ? config : StaticIp{}; }
 
+	/** The agent's SSH private keys for shutdown and reboot (OpenSSH format), or empty. */
+	const String& sshKeyShutdown() const { return sshKeyShutdown_; }
+	const String& sshKeyReboot() const { return sshKeyReboot_; }
+	void setSshKeys(const String& shutdown, const String& reboot);
+
 	/** An installed update that hasn't confirmed itself yet (see ota/Rollback.h). */
 	String otaVersion() const { return otaVersion_; }
 	String otaPartition() const { return otaPartition_; }
@@ -57,7 +62,7 @@ class Settings {
 
    private:
 	String serverUrl_, enrollToken_, tokenId_, secret_, wifiSsid_, wifiPassword_, deviceName_;
-	String otaVersion_, otaPartition_;
+	String otaVersion_, otaPartition_, sshKeyShutdown_, sshKeyReboot_;
 	uint32_t agentId_ = 0;
 	StaticIp staticIp_;
 	LogLevel logLevel_ = LogLevel::Info;

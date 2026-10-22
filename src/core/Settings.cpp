@@ -78,6 +78,8 @@ void Settings::load() {
 
 	otaVersion_ = readString(*store, k::OTA_VERSION);
 	otaPartition_ = readString(*store, k::OTA_PARTITION);
+	sshKeyShutdown_ = readString(*store, k::SSH_KEY_SHUTDOWN);
+	sshKeyReboot_ = readString(*store, k::SSH_KEY_REBOOT);
 
 	const uint8_t level = store->getUChar(k::LOG_LEVEL, static_cast<uint8_t>(LogLevel::Info));
 	logLevel_ = level <= static_cast<uint8_t>(LogLevel::Debug) ? static_cast<LogLevel>(level) : LogLevel::Info;
@@ -159,6 +161,14 @@ void Settings::setOtaMarker(const String& version, const String& partition) {
 void Settings::clearOtaMarker() {
 	if (otaVersion_.length() == 0 && otaPartition_.length() == 0) return;
 	setOtaMarker("", "");
+}
+
+void Settings::setSshKeys(const String& shutdown, const String& reboot) {
+	Store store(false);
+	writeString(*store, k::SSH_KEY_SHUTDOWN, shutdown);
+	writeString(*store, k::SSH_KEY_REBOOT, reboot);
+	sshKeyShutdown_ = shutdown;
+	sshKeyReboot_ = reboot;
 }
 
 void Settings::factoryReset() {

@@ -137,6 +137,27 @@ async function command(line: string, expect: string, timeoutMs = 8000) {
 }
 
 /** Right after a restart the console may not run yet on slow runners: repeat the harmless command. */
+/** The `status` output, once it got to the SSH key lines at its end. */
+async function statusOutput() {
+	for (let attempt = 0; attempt < 3; attempt++) {
+		const from = transcript.length;
+		sendLine("status");
+		if ((await waitFor("ssh keys:", 8000, from)) >= 0) {
+			await sleep(500);
+			return transcript.slice(from);
+		}
+	}
+	return "";
+}
+
+/** The fingerprints of the agent's SSH keys in a `status` output. */
+function sshKeys(status: string) {
+	return {
+		shutdown: /ssh keys:\s+shutdown (SHA256:[A-Za-z0-9+/]{43})/.exec(status)?.[1] ?? null,
+		reboot: /\s+reboot\s+(SHA256:[A-Za-z0-9+/]{43})/.exec(status)?.[1] ?? null,
+	};
+}
+
 async function commandAfterRestart(line: string, expect: string) {
 	for (let attempt = 0; attempt < 3; attempt++) {
 		if (await command(line, expect)) return true;
@@ -184,6 +205,14 @@ try {
 	// --- Console --------------------------------------------------------------------------------
 	check("help lists the commands", await command("help", "factory-reset confirm"));
 	check("status before setup", await command("status", "server:    not set"));
+	// libssh on the real chip: two Ed25519 keys created on first boot, stored in NVS.
+	check("the SSH keys were created on first boot", transcript.includes("SSH: created the agent's keys"));
+	const firstKeys = sshKeys(await statusOutput());
+	check(
+		"status shows two different SSH key fingerprints",
+		firstKeys.shutdown !== null && firstKeys.reboot !== null && firstKeys.shutdown !== firstKeys.reboot,
+		firstKeys,
+	);
 	check("unknown command is reported", await command("frobnicate", 'Unknown command "frobnicate"'));
 	check("invalid server URL is rejected", await command("server ftp://nope", "Invalid server URL"));
 	check("non-token is rejected", await command("enroll hunter2", "isn't an enrollment token"));
@@ -207,16 +236,15 @@ try {
 	check("boots again with its settings", (await waitFor("I Device kitchen-esp", BOOT_TIMEOUT_MS, beforeReboot)) >= 0);
 	await waitFor("[", 5000, transcript.length);
 	await sleep(1500);
-	let statusFrom = transcript.length;
-	for (let attempt = 0; attempt < 3; attempt++) {
-		statusFrom = transcript.length;
-		sendLine("status");
-		if ((await waitFor("partition:", 8000, statusFrom)) >= 0) break;
-	}
-	const status = transcript.slice(statusFrom);
+	const status = await statusOutput();
 	check("server URL persisted", status.includes("server:    http://[fd00::1]:18232"), status);
 	check("device name persisted", status.includes("device:    kitchen-esp"), status);
 	check("waiting to enroll with the stored token", status.includes("agent:     waiting to enroll"), status);
+	check("the SSH keys survive a restart", JSON.stringify(sshKeys(status)) === JSON.stringify(firstKeys), {
+		before: firstKeys,
+		after: sshKeys(status),
+	});
+	check("no new keys after a restart", !transcript.slice(beforeReboot).includes("SSH: created the agent's keys"));
 
 	const improv2 = new ImprovSerial(port as any, logger as any);
 	const info2 = await improv2.initialize(10000);
@@ -229,6 +257,12 @@ try {
 	await waitFor("I Device NetIgnite-", BOOT_TIMEOUT_MS, afterReset);
 	await sleep(1500);
 	check("after the reset the agent is unconfigured", await commandAfterRestart("status", "server:    not set"));
+	const resetKeys = sshKeys(await statusOutput());
+	check(
+		"a factory reset creates new SSH keys",
+		resetKeys.shutdown !== null && resetKeys.shutdown !== firstKeys.shutdown && resetKeys.reboot !== firstKeys.reboot,
+		{ before: firstKeys, after: resetKeys },
+	);
 } catch (error) {
 	check("test ran to the end", false, String(error));
 } finally {

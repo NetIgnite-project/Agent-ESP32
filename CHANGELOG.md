@@ -1,11 +1,9 @@
 # Changelog
 
-## 2.0.0 (2026-10-21)
+## Unreleased
 
-The first stable release of the ESP32 firmware v2, for NetIgnite server 2.0.0. Everything it can
-do is listed below.
-
-### Changes since 2.0.0-beta.2
+SSH needs the NetIgnite server release after 2.0.0. With server 2.0.0, everything else works as
+before, but without SSH.
 
 - **SSH with the agent's own keys.** The firmware no longer gets passwords or private keys from the
   server. On first boot it creates two Ed25519 key pairs, one for shutdown and one for reboot, and
@@ -16,6 +14,11 @@ do is listed below.
 - SSH only over an `https://` server address, and at most 10 SSH logins a minute.
 - `status` on the serial console shows the fingerprints of the SSH keys. A factory reset or
   installing again with the web installer creates new keys.
+
+## 2.0.0 (2026-10-21)
+
+The first stable release of the ESP32 firmware v2, for NetIgnite server 2.0.0. No changes since
+2.0.0-beta.2; everything it can do is listed below.
 
 ### Upgrading from v1
 

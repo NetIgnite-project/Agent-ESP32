@@ -3,6 +3,7 @@
 #include <libssh/libssh.h>
 #include <libssh_esp32.h>
 
+#include <new>
 #include <string>
 
 #include "core/Log.h"
@@ -149,10 +150,15 @@ SshWorker::Submit SshWorker::submit(uint32_t requestId, uint32_t generation, boo
                                     const protocol::SshRequest& request) {
 	// Only the main loop submits; the task only clears `busy_`.
 	if (busy_) return Submit::Busy;
-	if (!takeLogins(power ? 1 : 2)) return Submit::TooManyLogins;
 	busy_ = true;
 
-	auto* job = new Job{this, requestId, generation, power, request};
+	// nothrow: out of heap, fall back to an error instead of aborting.
+	auto* job = new (std::nothrow) Job{this, requestId, generation, power, request};
+	if (!job || !takeLogins(power ? 1 : 2)) {
+		delete job;
+		busy_ = false;
+		return job ? Submit::TooManyLogins : Submit::Busy;
+	}
 	if (xTaskCreate(run, "ssh", TASK_STACK, job, 1, nullptr) != pdPASS) {
 		delete job;
 		busy_ = false;

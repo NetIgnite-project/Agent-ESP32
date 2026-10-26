@@ -95,8 +95,9 @@ void AgentClient::loop() {
 				if (ssh.hostKey[0] != '\0') payload["host_key"] = ssh.hostKey;
 				payload["shutdown"] = ssh.shutdownAccepted;
 				payload["reboot"] = ssh.rebootAccepted;
-				if (ssh.checkError[0] != '\0') payload["error"] = ssh.checkError;
 			}
+			// Offline too, when the host name doesn't resolve.
+			if (ssh.checkError[0] != '\0') payload["error"] = ssh.checkError;
 			send(protocol::encodeResponse(ssh.requestId, payload.as<JsonObjectConst>()));
 		}
 	}
@@ -202,7 +203,8 @@ void AgentClient::sendLogs() {
 
 	JsonDocument payload;
 	JsonArray array = payload["lines"].to<JsonArray>();
-	for (const std::string& line : lines) array.add(line);
+	// Lines can hold other machines' text (a Wi-Fi name, a device's SSH output) in any encoding.
+	for (const std::string& line : lines) array.add(protocol::validUtf8(line));
 	if (result.dropped > 0) payload["dropped"] = result.dropped;
 	send(protocol::encodeEvent("LOG", payload.as<JsonObjectConst>()));
 }
@@ -312,6 +314,9 @@ void AgentClient::handleRequest(const protocol::Frame& frame) {
 			case SshWorker::Submit::TooManyLogins:
 				send(protocol::encodeError(frame.id, "Too many SSH logins (at most 10 a minute); try again shortly"));
 				break;
+			case SshWorker::Submit::OutOfMemory:
+				send(protocol::encodeError(frame.id, "Not enough memory for an SSH login right now; try again shortly"));
+				break;
 		}
 		return;
 	}
@@ -337,7 +342,7 @@ void AgentClient::handleRequest(const protocol::Frame& frame) {
 			std::vector<std::string> lines;
 			const auto result = Log::read(0, Log::RING_BYTES, lines);
 			JsonArray array = payload["lines"].to<JsonArray>();
-			for (const std::string& line : lines) array.add(line);
+			for (const std::string& line : lines) array.add(protocol::validUtf8(line));
 			payload["level"] = Log::levelName(Log::level());
 			if (cmd == "LOG_SUBSCRIBE") logCursor_ = result.next;
 		}

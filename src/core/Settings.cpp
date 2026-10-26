@@ -29,12 +29,10 @@ String readString(Preferences& prefs, const char* key) {
 	return prefs.isKey(key) ? prefs.getString(key, "") : String();
 }
 
-void writeString(Preferences& prefs, const char* key, const String& value) {
-	if (value.length() == 0) {
-		if (prefs.isKey(key)) prefs.remove(key);
-	} else {
-		prefs.putString(key, value);
-	}
+/** False if NVS didn't take the value (full, or the namespace couldn't be opened). */
+bool writeString(Preferences& prefs, const char* key, const String& value) {
+	if (value.length() == 0) return !prefs.isKey(key) || prefs.remove(key);
+	return prefs.putString(key, value) == value.length();
 }
 
 }  // namespace
@@ -163,12 +161,14 @@ void Settings::clearOtaMarker() {
 	setOtaMarker("", "");
 }
 
-void Settings::setSshKeys(const String& shutdown, const String& reboot) {
+bool Settings::setSshKeys(const String& shutdown, const String& reboot) {
 	Store store(false);
-	writeString(*store, k::SSH_KEY_SHUTDOWN, shutdown);
-	writeString(*store, k::SSH_KEY_REBOOT, reboot);
+	if (!writeString(*store, k::SSH_KEY_SHUTDOWN, shutdown) || !writeString(*store, k::SSH_KEY_REBOOT, reboot)) {
+		return false;
+	}
 	sshKeyShutdown_ = shutdown;
 	sshKeyReboot_ = reboot;
+	return true;
 }
 
 void Settings::factoryReset() {

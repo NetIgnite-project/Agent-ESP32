@@ -14,6 +14,20 @@ before, but without SSH.
 - SSH only over an `https://` server address, and at most 10 SSH logins a minute.
 - `status` on the serial console shows the fingerprints of the SSH keys. A factory reset or
   installing again with the web installer creates new keys.
+- Text from other machines reaches the server as valid UTF-8: a device's SSH error output (one
+  line), the Wi-Fi name in HELLO and log lines. Before, a Windows error message in its code page
+  or a Wi-Fi name in Latin-1 could get the connection to the server dropped.
+- `SSH_CHECK` reports a device that answers but whose SSH handshake fails (no common algorithm, a
+  timeout) as online, with the error, like the Linux agent; a host name that doesn't resolve says
+  so, and a link-local address with a zone (`fe80::1%eth0`) works. When both logins see different
+  host keys, it reports the first one with `host_key_mismatch`.
+- A failed `SSH_POWER` also reports Windows' error text, which it prints to stdout.
+- Every SSH login ends within the server's wait: 10 s per login of a check, 12 s for `SSH_POWER`.
+- The SSH keys are only used once they are stored in flash, so they can't change with the next
+  boot. A stored key that can't be read is replaced on its own, with a warning; the other key
+  stays.
+- Without enough free memory, an SSH request says so (instead of "Another SSH login is running")
+  and doesn't count toward the 10 logins a minute.
 
 ## 2.0.0 (2026-10-21)
 

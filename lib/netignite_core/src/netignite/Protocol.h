@@ -63,6 +63,20 @@ std::string encodeEmptyResponse(uint32_t id);
 std::string encodeError(uint32_t id, std::string_view error);
 std::string encodeEvent(std::string_view cmd, JsonObjectConst payload);
 
+/**
+ * `text` as valid UTF-8: every byte that isn't part of a well-formed UTF-8 sequence becomes `?`.
+ * The server closes a WebSocket that sends invalid UTF-8 in a text frame, and text from other
+ * machines (a device's SSH error output, a Wi-Fi name in the log) can be in any encoding.
+ */
+std::string validUtf8(std::string_view text);
+
+/**
+ * `text` as one line of valid UTF-8 (see validUtf8), for an error message: control characters and
+ * runs of whitespace become one space, the ends are trimmed, and it is cut to at most `maxBytes`
+ * without splitting a character.
+ */
+std::string oneLine(std::string_view text, size_t maxBytes);
+
 struct WakeRequest {
 	MacAddress mac{};
 	uint16_t port = 9;

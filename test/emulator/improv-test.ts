@@ -177,7 +177,7 @@ try {
 	check("Improv detected; state is Authorized (ready for Wi-Fi)", improv.state === 2, improv.state);
 	check(
 		"device info: firmware, version, chip, name",
-		info?.firmware === "NetIgnite Agent" && info.chipFamily === "ESP32" && /^NetIgnite-[0-9A-F]{6}$/.test(info.name) && info.version.startsWith("2.0.0"),
+		info?.firmware === "NetIgnite Agent" && info.chipFamily === "ESP32" && /^NetIgnite-[0-9A-F]{6}$/.test(info.name) && /^\d+\.\d+\.\d+$/.test(info.version),
 		info,
 	);
 

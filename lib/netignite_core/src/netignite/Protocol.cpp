@@ -124,7 +124,8 @@ std::string encodeError(uint32_t id, std::string_view error) {
 	doc["t"] = "res";
 	doc["id"] = id;
 	doc["ok"] = false;
-	doc["err"] = std::string(error.substr(0, 1024));
+	// Errors can carry another machine's text (a device's SSH output): valid UTF-8, one line.
+	doc["err"] = oneLine(error, 1024);
 	return serialize(doc);
 }
 
@@ -135,6 +136,79 @@ std::string encodeEvent(std::string_view cmd, JsonObjectConst payload) {
 	JsonObject p = doc["p"].to<JsonObject>();
 	if (!payload.isNull()) p.set(payload);
 	return serialize(doc);
+}
+
+namespace {
+
+/**
+ * Length of the well-formed UTF-8 sequence that starts at `i`, or 0 if none does. Strict like
+ * the server's check: no overlong forms, no UTF-16 surrogates, nothing above U+10FFFF.
+ */
+size_t utf8Sequence(std::string_view text, size_t i) {
+	const auto byte = [&](size_t k) { return static_cast<uint8_t>(text[k]); };
+	const uint8_t lead = byte(i);
+	if (lead < 0x80) return 1;
+
+	size_t length = 0;
+	uint8_t min = 0x80, max = 0xBF;  // the allowed range of the second byte
+	if (lead >= 0xC2 && lead <= 0xDF) {
+		length = 2;
+	} else if (lead >= 0xE0 && lead <= 0xEF) {
+		length = 3;
+		if (lead == 0xE0) min = 0xA0;
+		if (lead == 0xED) max = 0x9F;
+	} else if (lead >= 0xF0 && lead <= 0xF4) {
+		length = 4;
+		if (lead == 0xF0) min = 0x90;
+		if (lead == 0xF4) max = 0x8F;
+	} else {
+		return 0;
+	}
+	if (i + length > text.size() || byte(i + 1) < min || byte(i + 1) > max) return 0;
+	for (size_t k = 2; k < length; k++) {
+		if (byte(i + k) < 0x80 || byte(i + k) > 0xBF) return 0;
+	}
+	return length;
+}
+
+}  // namespace
+
+std::string validUtf8(std::string_view text) {
+	std::string out;
+	out.reserve(text.size());
+	for (size_t i = 0; i < text.size();) {
+		const size_t length = utf8Sequence(text, i);
+		if (length == 0) {
+			out += '?';
+			i++;
+		} else {
+			out.append(text.substr(i, length));
+			i += length;
+		}
+	}
+	return out;
+}
+
+std::string oneLine(std::string_view text, size_t maxBytes) {
+	std::string out;
+	bool space = false;
+	for (size_t i = 0; i < text.size();) {
+		const size_t length = utf8Sequence(text, i);
+		const uint8_t lead = static_cast<uint8_t>(text[i]);
+		const std::string_view piece = length == 0 ? std::string_view("?") : text.substr(i, length);
+		i += length == 0 ? 1 : length;
+
+		if (length == 1 && (lead <= ' ' || lead == 0x7F)) {
+			// Whitespace and control characters: one space between words, none at the ends.
+			space = !out.empty();
+			continue;
+		}
+		if (out.size() + (space ? 1 : 0) + piece.size() > maxBytes) break;
+		if (space) out += ' ';
+		space = false;
+		out.append(piece);
+	}
+	return out;
 }
 
 bool parseWakeRequest(JsonObjectConst payload, WakeRequest& out, std::string& error) {
@@ -337,7 +411,10 @@ bool parseSshRequest(JsonObjectConst payload, bool power, SshRequest& out, std::
 	out = SshRequest{};
 
 	const char* host = payload["host"];
-	const std::string_view h = host ? host : "";
+	std::string_view h = host ? host : "";
+	// The agent uses its own interface for link-local addresses (like STATUS). libssh rejects a
+	// zone such as `%eth0`, which wouldn't name one of the agent's interfaces anyway.
+	h = h.substr(0, h.find('%'));
 	bool hostOk = !h.empty() && h.size() <= 253;
 	for (char c : h) hostOk = hostOk && static_cast<unsigned char>(c) > ' ' && c != '/' && c != '@';
 	if (!hostOk) {

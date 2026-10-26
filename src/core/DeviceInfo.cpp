@@ -5,7 +5,10 @@
 #include <esp_ota_ops.h>
 #include <esp_system.h>
 
+#include <string_view>
+
 #include "Config.h"
+#include "netignite/Protocol.h"
 
 namespace deviceInfo {
 
@@ -58,7 +61,9 @@ void fill(JsonObject info, const Settings& settings, const WifiLink& wifi) {
 	if (linkLocal != "::") info["ipv6_link_local"] = linkLocal;
 	const String global = wifi.globalIpv6();
 	if (global != "::") info["ipv6_global"] = global;
-	info["wifi"] = wifi.ssid();
+	// SSIDs are raw bytes, some routers send Latin-1: invalid UTF-8 would get HELLO rejected.
+	const String ssid = wifi.ssid();
+	info["wifi"] = netignite::protocol::validUtf8(std::string_view(ssid.c_str(), ssid.length()));
 	info["rssi_dbm"] = wifi.rssi();
 	info["ip_mode"] = settings.staticIp().enabled ? "static" : "dhcp";
 	info["chip"] = chip();

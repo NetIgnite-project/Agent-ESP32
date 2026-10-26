@@ -640,6 +640,44 @@ void test_parse_ssh_requests() {
 	TEST_ASSERT_FALSE(parse(R"({"host":"h","port":22,"username":"a b"})", false));
 	TEST_ASSERT_FALSE(parse(R"({"host":"h","port":22,"username":""})", false));
 	TEST_ASSERT_FALSE(parse(R"({"host":"h","port":22,"username":"a","host_key":"MD5:aa"})", false));
+
+	// A zone is dropped, like for STATUS: the agent uses its own interface for link-local addresses.
+	TEST_ASSERT_TRUE(parse(R"({"host":"fe80::1%eth0","port":22,"username":"a"})", false));
+	TEST_ASSERT_EQUAL_STRING("fe80::1", ssh.host.c_str());
+	TEST_ASSERT_FALSE(parse(R"({"host":"%eth0","port":22,"username":"a"})", false));
+}
+
+// --- Text from other machines ------------------------------------------------------------------
+
+void test_valid_utf8() {
+	TEST_ASSERT_EQUAL_STRING("plain ASCII", protocol::validUtf8("plain ASCII").c_str());
+	// é, €, an emoji: kept.
+	TEST_ASSERT_EQUAL_STRING("\xC3\xA9 \xE2\x82\xAC \xF0\x9F\x98\x80",
+	                         protocol::validUtf8("\xC3\xA9 \xE2\x82\xAC \xF0\x9F\x98\x80").c_str());
+	// Code page 850 ("Accès refusé"), a cut sequence, an overlong form, a UTF-16 surrogate and a
+	// code point above U+10FFFF: every byte that isn't valid becomes '?'.
+	TEST_ASSERT_EQUAL_STRING("Acc?s refus?", protocol::validUtf8("Acc\x8As refus\x82").c_str());
+	TEST_ASSERT_EQUAL_STRING("x?", protocol::validUtf8("x\xC3").c_str());
+	TEST_ASSERT_EQUAL_STRING("??", protocol::validUtf8("\xC0\xAF").c_str());
+	TEST_ASSERT_EQUAL_STRING("???", protocol::validUtf8("\xED\xA0\x80").c_str());
+	TEST_ASSERT_EQUAL_STRING("????", protocol::validUtf8("\xF4\x90\x80\x80").c_str());
+	// Log lines keep their line breaks.
+	TEST_ASSERT_EQUAL_STRING("a\nb", protocol::validUtf8("a\nb").c_str());
+}
+
+void test_one_line() {
+	TEST_ASSERT_EQUAL_STRING("line one line two end",
+	                         protocol::oneLine("  line one\r\nline two\t end \n", 100).c_str());
+	TEST_ASSERT_EQUAL_STRING("a b", protocol::oneLine("a\x01\x7F b", 100).c_str());
+	TEST_ASSERT_EQUAL_STRING("", protocol::oneLine(" \r\n ", 100).c_str());
+	// Cut at the limit, never inside a character: the euro sign takes 3 bytes.
+	TEST_ASSERT_EQUAL_STRING("ab", protocol::oneLine("ab\xE2\x82\xAC", 4).c_str());
+	TEST_ASSERT_EQUAL_STRING("ab\xE2\x82\xAC", protocol::oneLine("ab\xE2\x82\xAC", 5).c_str());
+	TEST_ASSERT_EQUAL_STRING("Acc?s", protocol::oneLine("Acc\x8As refus\x82", 5).c_str());
+
+	// Errors carry such text into the frame: one line, valid UTF-8.
+	TEST_ASSERT_EQUAL_STRING(R"({"t":"res","id":10,"ok":false,"err":"Exit code 1: Acc?s refus?"})",
+	                         protocol::encodeError(10, "Exit code 1: Acc\x8As\r\nrefus\x82").c_str());
 }
 
 int main(int, char**) {
@@ -680,5 +718,7 @@ int main(int, char**) {
 	RUN_TEST(test_parse_log_subscribe);
 	RUN_TEST(test_base64);
 	RUN_TEST(test_parse_ssh_requests);
+	RUN_TEST(test_valid_utf8);
+	RUN_TEST(test_one_line);
 	return UNITY_END();
 }

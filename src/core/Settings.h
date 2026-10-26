@@ -49,7 +49,8 @@ class Settings {
 	/** The agent's SSH private keys for shutdown and reboot (OpenSSH format), or empty. */
 	const String& sshKeyShutdown() const { return sshKeyShutdown_; }
 	const String& sshKeyReboot() const { return sshKeyReboot_; }
-	void setSshKeys(const String& shutdown, const String& reboot);
+	/** False if NVS didn't store them: keys that would change with the next boot mustn't be used. */
+	bool setSshKeys(const String& shutdown, const String& reboot);
 
 	/** An installed update that hasn't confirmed itself yet (see ota/Rollback.h). */
 	String otaVersion() const { return otaVersion_; }

@@ -42,11 +42,14 @@ class SshWorker {
 		bool shutdownAccepted;
 		bool rebootAccepted;
 		char hostKey[64];
-		/** `host_key_mismatch` or a short message; empty otherwise. */
+		/**
+		 * `host_key_mismatch` or a short message; empty otherwise. Also set while offline when the
+		 * host name doesn't resolve.
+		 */
 		char checkError[96];
 	};
 
-	enum class Submit { Started, Busy, TooManyLogins };
+	enum class Submit { Started, Busy, TooManyLogins, OutOfMemory };
 
 	/** Loads the agent's keys from the settings, or creates and stores new ones. */
 	void begin(Settings& settings);
@@ -67,7 +70,12 @@ class SshWorker {
 		bool power;
 		netignite::protocol::SshRequest request;
 	};
-	enum class Login { Unreachable, HostKeyMismatch, Failed, Refused, Accepted };
+	/**
+	 * How a login ended. NoAddress and Unreachable: no TCP connection (the host name doesn't
+	 * resolve / the port didn't take one), so the device counts as offline. Failed: the device
+	 * answered, but the SSH handshake or the login didn't work for another reason than the key.
+	 */
+	enum class Login { NoAddress, Unreachable, HostKeyMismatch, Failed, Refused, Accepted };
 
 	QueueHandle_t results_ = nullptr;
 	std::atomic<bool> busy_{false};
@@ -79,14 +87,22 @@ class SshWorker {
 	size_t loginCount_ = 0;
 
 	static size_t index(Action action) { return action == Action::Shutdown ? 0 : 1; }
-	bool takeLogins(size_t count);
+	/** Whether `count` more logins fit into the last minute's limit (doesn't take them). */
+	bool loginsAvailable(size_t count);
+	/** Counts `count` logins that start now; only once their job really started. */
+	void recordLogins(size_t count);
 	void setupKeys(Settings& settings);
+	/** Frees both keys: SSH is off (ready() is false) from then on. */
+	void freeKeys();
 
 	static void run(void* job);
 	static void setupTask(void* arg);
 	void check(const Job& job, Done& done);
 	void power(const Job& job, Done& done);
-	/** Connects, checks the host key and authenticates with `key`; `session` stays connected. */
+	/**
+	 * Connects, checks the host key and authenticates with `key`, all before `deadline` (millis);
+	 * `session` stays connected.
+	 */
 	Login login(ssh_session_struct* session, const netignite::protocol::SshRequest& request, const std::string& expectedHostKey,
-	            ssh_key_struct* key, std::string& hostKey, std::string& error);
+	            ssh_key_struct* key, uint32_t deadline, std::string& hostKey, std::string& error);
 };
